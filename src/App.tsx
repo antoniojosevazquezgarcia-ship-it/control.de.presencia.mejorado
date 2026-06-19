@@ -148,6 +148,20 @@ function App() {
     return 0;
   };
 
+  const formatGPSObs = (eObs: string, sObs: string) => {
+    if (!eObs && !sObs) return 'S/N';
+    const noGPSKeywords = ['Manual', 'Resolución Huérfano', 'Sin GPS', 'Resolución', 'Resolución Huérfanos'];
+    const isEReal = eObs && !noGPSKeywords.includes(eObs);
+    const isSReal = sObs && !noGPSKeywords.includes(sObs);
+    
+    if (isEReal && !isSReal) return eObs;
+    if (!isEReal && isSReal) return sObs;
+    if (isEReal && isSReal) {
+      return eObs === sObs ? eObs : `${eObs} | ${sObs}`;
+    }
+    return eObs || sObs || 'S/N';
+  };
+
   useEffect(() => {
     const inicializar = async () => {
       setCargandoConfig(true);
@@ -289,22 +303,31 @@ function App() {
         setTimeout(() => setMensaje(null), 3000);
         setFichajeExitosoModal({ accion, hora: horaActual, cp: 'Sin GPS' });
       }
-    }, async () => {
-      // Fallback sin GPS
+    }, async (err) => {
+      let mensajeError = "Sin GPS";
+      if (err.code === 1) {
+        mensajeError = "Permiso GPS denegado";
+        alert("Atención: Has denegado los permisos de geolocalización. Actívalos en los ajustes de tu navegador para que la aplicación registre tu ubicación.");
+      } else if (err.code === 2) {
+        mensajeError = "Ubicación no disponible";
+      } else if (err.code === 3) {
+        mensajeError = "Tiempo espera GPS agotado";
+      }
+      
       await enviarFichaje({
         tipoAccion: "fichaje", fecha: fechaActual, hora: horaActual,
         usuarioId: user?.id, usuarioNombre: user?.nombre, accion,
-        tareaId: task?.id, tareaNombre: task?.nombre, latitud: 0, longitud: 0, observaciones: "Sin GPS"
+        tareaId: task?.id, tareaNombre: task?.nombre, latitud: 0, longitud: 0, observaciones: mensajeError
       });
       setRegistrosBrutos(prev => prev.map(r => 
         (r[8] === user?.id && r[9] === task?.id && r[0] === fechaActual && r[1] === horaActual)
-          ? [fechaActual, horaActual, user?.nombre || '', accion, task?.nombre || '', '0', '0', 'Sin GPS', user?.id || '', task?.id || '']
+          ? [fechaActual, horaActual, user?.nombre || '', accion, task?.nombre || '', '0', '0', mensajeError, user?.id || '', task?.id || '']
           : r
       ));
-      setMensaje({ texto: `¡${accion} registrada con éxito (Sin GPS)!`, tipo: 'exito' });
-      setTimeout(() => setMensaje(null), 3000);
-      setFichajeExitosoModal({ accion, hora: horaActual, cp: 'Sin GPS' });
-    });
+      setMensaje({ texto: `¡${accion} registrada! (${mensajeError})`, tipo: 'info' });
+      setTimeout(() => setMensaje(null), 3500);
+      setFichajeExitosoModal({ accion, hora: horaActual, cp: mensajeError });
+    }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
   };
 
   // Borrar marcaje individual
@@ -430,14 +453,61 @@ function App() {
     const task = tareas.find(t => t.id === formManualTask);
     const fechaES = convertToESDate(formManualDate);
     
+    setModalManualOpen(false);
+    setMensaje({ texto: 'Determinando geolocalización y guardando...', tipo: 'info' });
+    
+    // Capturar la geolocalización en tiempo real al guardar el registro manual/resolución
+    navigator.geolocation.getCurrentPosition(async (pos) => {
+      try {
+        const cp = await obtenerCodigoPostal(pos.coords.latitude, pos.coords.longitude);
+        await enviarFichaje({
+          tipoAccion: "fichaje",
+          fecha: fechaES,
+          hora: formManualTime,
+          usuarioId: formManualUser,
+          usuarioNombre: user?.nombre,
+          accion: formManualAction,
+          tareaId: formManualTask,
+          tareaNombre: task?.nombre,
+          latitud: pos.coords.latitude,
+          longitud: pos.coords.longitude,
+          observaciones: cp
+        });
+        
+        // Actualizar listado localmente con el CP
+        const nuevoReg = [
+          fechaES, formManualTime, user?.nombre || '', formManualAction, task?.nombre || '',
+          String(pos.coords.latitude), String(pos.coords.longitude), cp, formManualUser, formManualTask
+        ];
+        setRegistrosBrutos(prev => [...prev, nuevoReg]);
+        
+        setMensaje({ texto: `¡Fichaje guardado con éxito (CP: ${cp})!`, tipo: 'exito' });
+        setTimeout(() => setMensaje(null), 3000);
+        refrescarDatos();
+      } catch (e) {
+        console.error(e);
+        await guardarManualFallback(fechaES, user, task, "Manual sin GPS");
+      }
+    }, async (err) => {
+      let mensajeError = "Manual sin GPS";
+      if (err.code === 1) {
+        mensajeError = "Manual sin GPS (Permiso denegado)";
+        alert("Atención: Has denegado los permisos de geolocalización. Actívalos en los ajustes de tu navegador para que la aplicación registre tu ubicación.");
+      } else if (err.code === 2) {
+        mensajeError = "Manual sin GPS (No disponible)";
+      } else if (err.code === 3) {
+        mensajeError = "Manual sin GPS (Timeout)";
+      }
+      await guardarManualFallback(fechaES, user, task, mensajeError);
+    }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+  };
+
+  const guardarManualFallback = async (fechaES: string, user: any, task: any, obs: string) => {
     const nuevoReg = [
       fechaES, formManualTime, user?.nombre || '', formManualAction, task?.nombre || '',
-      '0', '0', 'Manual', formManualUser, formManualTask
+      '0', '0', obs, formManualUser, formManualTask
     ];
-    
     setRegistrosBrutos(prev => [...prev, nuevoReg]);
-    setModalManualOpen(false);
-    setMensaje({ texto: 'Fichaje guardado correctamente. Sincronizando...', tipo: 'info' });
     
     try {
       await enviarFichaje({
@@ -451,9 +521,9 @@ function App() {
         tareaNombre: task?.nombre,
         latitud: 0,
         longitud: 0,
-        observaciones: formManualIsResolution ? "Resolución Huérfano" : "Manual"
+        observaciones: obs
       });
-      setMensaje({ texto: '¡Fichaje manual registrado con éxito!', tipo: 'exito' });
+      setMensaje({ texto: 'Fichaje guardado con éxito (sin GPS).', tipo: 'exito' });
       setTimeout(() => setMensaje(null), 3000);
       refrescarDatos();
     } catch (e) {
@@ -862,7 +932,7 @@ function App() {
         {/* CABECERA DE LA APP CON BOTÓN GLOBAL DE SALIR */}
         <div className="flex justify-between items-center border-b pb-2 mb-3">
           <div className="flex items-center gap-1.5">
-            <span className="text-xs font-black uppercase tracking-widest text-slate-400">Control CP</span>
+            <span className="text-sm font-black uppercase tracking-widest text-slate-400">Control CP</span>
           </div>
           <button 
             onClick={() => {
@@ -870,7 +940,7 @@ function App() {
                 setAppExited(true);
               }
             }} 
-            className="text-[10px] font-black text-rose-500 hover:text-rose-700 transition-colors flex items-center gap-1 bg-rose-50 px-2.5 py-1.5 rounded-lg border border-rose-100/50 shadow-sm"
+            className="text-xs font-black text-rose-500 hover:text-rose-700 transition-colors flex items-center gap-1.5 bg-rose-50 px-3.5 py-2 rounded-lg border border-rose-100/50 shadow-sm animate-pulse"
           >
             <LogOut className="w-3.5 h-3.5" />
             <span>SALIR</span>
@@ -878,7 +948,7 @@ function App() {
         </div>
         
         {/* Barra superior de pestañas táctiles */}
-        <div className="flex bg-slate-100 p-1 rounded-2xl mb-4 flex-shrink-0">
+        <div className="flex bg-slate-100 p-1.5 rounded-2xl mb-4 flex-shrink-0">
           {[
             { id: 'fichaje', label: 'Fichar', icon: Clock },
             { id: 'informes', label: 'Diario', icon: Calendar },
@@ -890,11 +960,11 @@ function App() {
               <button 
                 key={tab.id} 
                 onClick={() => setTabActiva(tab.id)} 
-                className={`flex-1 py-2.5 rounded-xl font-bold text-[10px] uppercase flex items-center justify-center transition-all ${
+                className={`flex-1 py-3 rounded-xl font-black text-xs uppercase flex items-center justify-center transition-all ${
                   tabActiva === tab.id ? 'bg-white text-blue-700 shadow-sm border border-slate-200/50' : 'text-slate-500 hover:text-slate-800'
                 }`}
               >
-                <Icon className="w-3.5 h-3.5 mr-1" />
+                <Icon className="w-4 h-4 mr-1" />
                 <span>{tab.label}</span>
               </button>
             );
@@ -903,7 +973,7 @@ function App() {
 
         {/* Mensaje de confirmación global */}
         {mensaje && (
-          <div className={`p-3 rounded-2xl text-center font-bold text-xs mb-3 shadow-sm border animate-pulse ${
+          <div className={`p-3.5 rounded-2xl text-center font-black text-sm mb-3 shadow-sm border animate-pulse ${
             mensaje.tipo === 'exito' ? 'bg-emerald-500 text-white border-emerald-600' :
             mensaje.tipo === 'error' ? 'bg-rose-500 text-white border-rose-600' :
             'bg-blue-600 text-white border-blue-700'
@@ -920,32 +990,32 @@ function App() {
               
               {/* Encabezado con reloj en tiempo real */}
               <div className="text-center pt-2 pb-4">
-                <h1 className="text-sm font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Jornada Laboral</h1>
-                <div className="text-4xl font-extrabold text-blue-900 tracking-tight leading-none tabular-nums my-2">
+                <h1 className="text-base font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Jornada Laboral</h1>
+                <div className="text-5xl font-black text-blue-900 tracking-tight leading-none tabular-nums my-2.5">
                   {horaActualLocal || '--:--:--'}
                 </div>
-                <p className="text-xs font-semibold text-slate-500 capitalize">{fechaActualLocal}</p>
+                <p className="text-sm font-semibold text-slate-500 capitalize">{fechaActualLocal}</p>
               </div>
 
               {/* Selector de Usuario y Estado Actual */}
               <div className="bg-slate-50/70 p-4 rounded-3xl border border-slate-150 shadow-sm space-y-4">
                 <div>
                   <div className="flex justify-between items-center mb-1">
-                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider block">Colaborador</label>
+                    <label className="text-xs font-black text-slate-400 uppercase tracking-wider block">Colaborador</label>
                     {usuarioId && (
                       <button 
                         onClick={handleCerrarSesion} 
-                        className="text-[9px] font-bold text-rose-500 flex items-center gap-0.5 hover:text-rose-700 transition-colors"
+                        className="text-xs font-black text-rose-500 flex items-center gap-0.5 hover:text-rose-700 transition-colors"
                         title="Cerrar sesión / Limpiar usuario"
                       >
-                        <LogOut className="w-3 h-3" />
+                        <LogOut className="w-3.5 h-3.5" />
                         <span>Cambiar</span>
                       </button>
                     )}
                   </div>
                   
                   <select 
-                    className="w-full p-3 bg-white border border-slate-200 rounded-xl font-bold text-base outline-none focus:border-blue-500 transition-all cursor-pointer"
+                    className="w-full p-3.5 bg-white border border-slate-200 rounded-xl font-bold text-base outline-none focus:border-blue-500 transition-all cursor-pointer"
                     value={usuarioId} 
                     onChange={(e) => setUsuarioId(e.target.value)}
                   >
@@ -959,7 +1029,7 @@ function App() {
                 {/* Mostrar Estado Actual del Colaborador en Tiempo Real */}
                 {usuarioId && estadoUsuarioHoy && (
                   <div className="pt-2 border-t border-slate-200/60 flex items-center justify-between">
-                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Estado de hoy:</span>
+                    <span className="text-xs font-black text-slate-400 uppercase tracking-wider">Estado de hoy:</span>
                     <div className="flex items-center gap-2 bg-white px-3 py-1 rounded-full border border-slate-100 shadow-sm">
                       {estadoUsuarioHoy.estado === 'DENTRO' ? (
                         <>
@@ -967,17 +1037,17 @@ function App() {
                             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                             <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
                           </span>
-                          <span className="text-xs font-black text-emerald-600">DENTRO ({estadoUsuarioHoy.hora})</span>
+                          <span className="text-sm font-black text-emerald-600">DENTRO ({estadoUsuarioHoy.hora})</span>
                         </>
                       ) : estadoUsuarioHoy.estado === 'FUERA' ? (
                         <>
                           <span className="h-2.5 w-2.5 rounded-full bg-rose-500"></span>
-                          <span className="text-xs font-black text-rose-600">FUERA (Salida {estadoUsuarioHoy.hora})</span>
+                          <span className="text-sm font-black text-rose-600">FUERA (Salida {estadoUsuarioHoy.hora})</span>
                         </>
                       ) : (
                         <>
                           <span className="h-2.5 w-2.5 rounded-full bg-slate-300"></span>
-                          <span className="text-xs font-black text-slate-500">SIN REGISTROS</span>
+                          <span className="text-sm font-black text-slate-500">SIN REGISTROS</span>
                         </>
                       )}
                     </div>
@@ -987,9 +1057,9 @@ function App() {
 
               {/* Selector de Centro de Trabajo */}
               <div className="bg-slate-50/70 p-4 rounded-3xl border border-slate-150 shadow-sm mt-3">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider block mb-1">Centro de Trabajo</label>
+                <label className="text-xs font-black text-slate-400 uppercase tracking-wider block mb-1">Centro de Trabajo</label>
                 <select 
-                  className="w-full p-3 bg-white border border-slate-200 rounded-xl font-bold text-base outline-none focus:border-blue-500 transition-all cursor-pointer"
+                  className="w-full p-3.5 bg-white border border-slate-200 rounded-xl font-bold text-base outline-none focus:border-blue-500 transition-all cursor-pointer"
                   value={tareaId} 
                   onChange={(e) => setTareaId(e.target.value)}
                   disabled={!usuarioId}
@@ -1012,19 +1082,19 @@ function App() {
                 <button 
                   onClick={() => handleFichaje('Entrada')} 
                   disabled={!usuarioId}
-                  className="bg-emerald-500 active:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed text-white py-5 rounded-3xl font-black text-lg shadow-lg hover:shadow-emerald-500/20 uppercase tracking-widest border-b-4 border-emerald-600 transition-all transform active:scale-95 flex flex-col items-center justify-center"
+                  className="bg-emerald-500 active:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed text-white py-5 rounded-3xl font-black text-xl shadow-lg hover:shadow-emerald-500/20 uppercase tracking-widest border-b-4 border-emerald-600 transition-all transform active:scale-95 flex flex-col items-center justify-center"
                 >
                   <span>Entrada</span>
-                  <span className="text-[9px] font-normal tracking-normal opacity-85 lowercase mt-0.5">clock in</span>
+                  <span className="text-xs font-semibold tracking-normal opacity-85 lowercase mt-0.5">clock in</span>
                 </button>
                 
                 <button 
                   onClick={() => handleFichaje('Salida')} 
                   disabled={!usuarioId}
-                  className="bg-rose-500 active:bg-rose-600 disabled:opacity-50 disabled:cursor-not-allowed text-white py-5 rounded-3xl font-black text-lg shadow-lg hover:shadow-rose-500/20 uppercase tracking-widest border-b-4 border-rose-600 transition-all transform active:scale-95 flex flex-col items-center justify-center"
+                  className="bg-rose-500 active:bg-rose-600 disabled:opacity-50 disabled:cursor-not-allowed text-white py-5 rounded-3xl font-black text-xl shadow-lg hover:shadow-rose-500/20 uppercase tracking-widest border-b-4 border-rose-600 transition-all transform active:scale-95 flex flex-col items-center justify-center"
                 >
                   <span>Salida</span>
-                  <span className="text-[9px] font-normal tracking-normal opacity-85 lowercase mt-0.5">clock out</span>
+                  <span className="text-xs font-semibold tracking-normal opacity-85 lowercase mt-0.5">clock out</span>
                 </button>
               </div>
 
@@ -1050,25 +1120,25 @@ function App() {
                 <div className="flex gap-2">
                   <button 
                     onClick={abrirFichajeManualNuevo}
-                    className="bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1.5 rounded-lg text-[9px] font-black uppercase flex items-center gap-0.5 transition-colors shadow-sm"
+                    className="bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-2.5 rounded-lg text-xs font-black uppercase flex items-center gap-1 transition-colors shadow-sm"
                   >
-                    <Plus className="w-3 h-3" /> Fichaje
+                    <Plus className="w-3.5 h-3.5" /> Fichaje
                   </button>
                   <button 
                     onClick={handlePrint} 
-                    className="bg-slate-900 hover:bg-slate-800 text-white px-2.5 py-1.5 rounded-lg text-[9px] font-black uppercase flex items-center gap-0.5 transition-colors shadow-sm"
+                    className="bg-slate-900 hover:bg-slate-800 text-white px-3.5 py-2.5 rounded-lg text-xs font-black uppercase flex items-center gap-1 transition-colors shadow-sm"
                   >
-                    <Printer className="w-3 h-3" /> Reporte
+                    <Printer className="w-3.5 h-3.5" /> Reporte
                   </button>
                 </div>
               </div>
 
               {/* Filtros */}
               <div className="bg-slate-50 border border-slate-200 p-3 rounded-2xl space-y-2 mb-3">
-                <div className="flex items-center gap-2 bg-white px-2 py-1 rounded-xl border border-slate-200">
-                  <User className="w-3.5 h-3.5 text-slate-400" />
+                <div className="flex items-center gap-2 bg-white px-2.5 py-1.5 rounded-xl border border-slate-200">
+                  <User className="w-4 h-4 text-slate-400" />
                   <select 
-                    className="flex-1 bg-transparent text-xs font-bold outline-none border-none cursor-pointer py-1"
+                    className="flex-1 bg-transparent text-sm font-black outline-none border-none cursor-pointer py-1.5"
                     value={usuarioDiarioId} 
                     onChange={(e) => setUsuarioDiarioId(e.target.value)}
                   >
@@ -1079,10 +1149,10 @@ function App() {
                   </select>
                 </div>
 
-                <div className="flex items-center gap-2 bg-white px-2 py-1 rounded-xl border border-slate-200">
-                  <FolderOpen className="w-3.5 h-3.5 text-slate-400" />
+                <div className="flex items-center gap-2 bg-white px-2.5 py-1.5 rounded-xl border border-slate-200">
+                  <FolderOpen className="w-4 h-4 text-slate-400" />
                   <select 
-                    className="flex-1 bg-transparent text-xs font-bold outline-none border-none cursor-pointer py-1"
+                    className="flex-1 bg-transparent text-sm font-black outline-none border-none cursor-pointer py-1.5"
                     value={tareaDiarioId} 
                     onChange={(e) => setTareaDiarioId(e.target.value)}
                   >
@@ -1094,22 +1164,22 @@ function App() {
                 </div>
 
                 <div className="grid grid-cols-2 gap-2">
-                  <input type="date" value={filtroDesde} onChange={(e) => setFiltroDesde(e.target.value)} className="p-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold outline-none" />
-                  <input type="date" value={filtroHasta} onChange={(e) => setFiltroHasta(e.target.value)} className="p-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold outline-none" />
+                  <input type="date" value={filtroDesde} onChange={(e) => setFiltroDesde(e.target.value)} className="p-2.5 bg-white border border-slate-200 rounded-xl text-sm font-bold outline-none" />
+                  <input type="date" value={filtroHasta} onChange={(e) => setFiltroHasta(e.target.value)} className="p-2.5 bg-white border border-slate-200 rounded-xl text-sm font-bold outline-none" />
                 </div>
 
                 <div className="flex items-center justify-between pt-1">
                   <div className="flex items-center gap-2">
-                    <input type="checkbox" id="check-h" checked={incluirHistorico} onChange={e => setIncluirHistorico(e.target.checked)} className="w-3.5 h-3.5 accent-blue-600 rounded" />
-                    <label htmlFor="check-h" className="text-[9px] font-black uppercase text-slate-500 cursor-pointer">Incluir histórico</label>
+                    <input type="checkbox" id="check-h" checked={incluirHistorico} onChange={e => setIncluirHistorico(e.target.checked)} className="w-4 h-4 accent-blue-600 rounded" />
+                    <label htmlFor="check-h" className="text-xs font-black uppercase text-slate-500 cursor-pointer">Incluir histórico</label>
                   </div>
                   
                   <button 
                     onClick={() => refrescarDatos()}
-                    className="text-[9px] font-bold text-blue-600 uppercase flex items-center gap-0.5"
+                    className="text-xs font-black text-blue-600 uppercase flex items-center gap-1"
                     disabled={refrescando}
                   >
-                    <RefreshCw className={`w-2.5 h-2.5 ${refrescando ? 'animate-spin' : ''}`} />
+                    <RefreshCw className={`w-3.5 h-3.5 ${refrescando ? 'animate-spin' : ''}`} />
                     <span>{refrescando ? 'Actualizando' : 'Actualizar'}</span>
                   </button>
                 </div>
@@ -1118,7 +1188,7 @@ function App() {
               {/* Listado de Días */}
               <div className="flex-1 overflow-y-auto space-y-3 pb-2 custom-scrollbar">
                 {dataStore.dias.length === 0 ? (
-                  <div className="text-center py-10 bg-slate-50 rounded-2xl border border-slate-200 text-xs font-bold text-slate-400">
+                  <div className="text-center py-10 bg-slate-50 rounded-2xl border border-slate-200 text-sm font-bold text-slate-400">
                     No se han encontrado registros en este rango de fechas.
                   </div>
                 ) : (
@@ -1133,7 +1203,7 @@ function App() {
                       <div key={dia.iso} className="bg-white border border-slate-250 rounded-2xl p-3 shadow-sm space-y-3">
                         {/* Cabecera del día */}
                         <div className="flex justify-between items-center border-b border-slate-100 pb-1.5">
-                          <span className="text-[10px] font-black text-slate-400 uppercase">
+                          <span className="text-xs font-black text-slate-400 uppercase">
                             {new Date(dia.iso + 'T00:00:00').toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric', month: 'short' })}
                           </span>
                           <span className="text-lg font-black text-blue-900">{Math.floor(total/60)}h {total%60}m</span>
@@ -1145,11 +1215,11 @@ function App() {
                             <div key={i} className="bg-slate-50 p-2.5 rounded-xl border border-slate-100 flex flex-col justify-between gap-1.5 relative group">
                               <div className="flex justify-between items-start">
                                 <div>
-                                  <p className="text-[10px] font-black text-slate-900 uppercase leading-none mb-1">{t.user}</p>
-                                  <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest">{t.task}</p>
+                                  <p className="text-xs font-black text-slate-900 uppercase leading-none mb-1">{t.user}</p>
+                                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">{t.task}</p>
                                 </div>
                                 <div className="flex items-center gap-1.5">
-                                  <span className="text-[10px] font-extrabold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-md">{t.durStr}</span>
+                                  <span className="text-xs font-black text-blue-700 bg-blue-50 px-2.5 py-1 rounded-md">{t.durStr}</span>
                                   {/* Botón borrar tramo completo */}
                                   <button 
                                     onClick={() => handleBorrarTramoCompleto(t.fechaOriginal, t.inicio, t.fin, t.userId, t.taskId, t.user)}
@@ -1161,51 +1231,51 @@ function App() {
                                 </div>
                               </div>
                               
-                              <div className="flex justify-between items-center text-[10px] text-slate-600 border-t border-slate-200/40 pt-1.5">
+                              <div className="flex justify-between items-center text-xs text-slate-600 border-t border-slate-200/40 pt-2">
                                 <div className="flex gap-4">
                                   {/* Editar/Borrar individual Entrada */}
-                                  <span className="flex items-center gap-1 bg-white border rounded px-1.5 py-0.5">
-                                    <span className="font-extrabold text-emerald-600">E:</span> {t.inicio}
+                                  <span className="flex items-center gap-1 bg-white border rounded-lg px-2 py-1">
+                                    <span className="font-black text-emerald-600">E:</span> {t.inicio}
                                     <button 
                                       onClick={() => setEditando({usuarioId: t.userId, fecha: t.fechaOriginal, horaOriginal: t.inicio, nuevaHora: t.inicio, nuevaAccion: 'Entrada', nuevaTareaId: t.taskId, accionOriginal: 'Entrada'})}
                                       className="text-blue-500 hover:text-blue-700 ml-1"
                                       title="Editar entrada"
                                     >
-                                      <Edit className="w-2.5 h-2.5" />
+                                      <Edit className="w-3 h-3" />
                                     </button>
                                     <button 
                                       onClick={() => handleBorrarIndividual(t.fechaOriginal, t.inicio, 'Entrada', t.userId, t.taskId, t.user)}
                                       className="text-rose-400 hover:text-rose-600 ml-0.5"
                                       title="Borrar entrada"
                                     >
-                                      <Trash2 className="w-2.5 h-2.5" />
+                                      <Trash2 className="w-3 h-3" />
                                     </button>
                                   </span>
 
                                   {/* Editar/Borrar individual Salida */}
-                                  <span className="flex items-center gap-1 bg-white border rounded px-1.5 py-0.5">
-                                    <span className="font-extrabold text-rose-500">S:</span> {t.fin}
+                                  <span className="flex items-center gap-1 bg-white border rounded-lg px-2 py-1">
+                                    <span className="font-black text-rose-500">S:</span> {t.fin}
                                     <button 
                                       onClick={() => setEditando({usuarioId: t.userId, fecha: t.fechaOriginal, horaOriginal: t.fin, nuevaHora: t.fin, nuevaAccion: 'Salida', nuevaTareaId: t.taskId, accionOriginal: 'Salida'})}
                                       className="text-blue-500 hover:text-blue-700 ml-1"
                                       title="Editar salida"
                                     >
-                                      <Edit className="w-2.5 h-2.5" />
+                                      <Edit className="w-3 h-3" />
                                     </button>
                                     <button 
                                       onClick={() => handleBorrarIndividual(t.fechaOriginal, t.fin, 'Salida', t.userId, t.taskId, t.user)}
                                       className="text-rose-400 hover:text-rose-600 ml-0.5"
                                       title="Borrar salida"
                                     >
-                                      <Trash2 className="w-2.5 h-2.5" />
+                                      <Trash2 className="w-3 h-3" />
                                     </button>
                                   </span>
                                 </div>
                                 
                                 {/* Info Geolocalización */}
-                                <div className="text-[8px] text-slate-400 flex items-center gap-0.5">
-                                  <MapPin className="w-2.5 h-2.5 text-blue-500" />
-                                  <span>{t.entradaGPS?.obs || t.salidaGPS?.obs || 'S/N'}</span>
+                                <div className="text-[10px] text-slate-400 font-bold flex items-center gap-1" title="Códigos Postales registrados (Entrada / Salida)">
+                                  <MapPin className="w-3 h-3 text-blue-500" />
+                                  <span>{formatGPSObs(t.entradaGPS?.obs, t.salidaGPS?.obs)}</span>
                                 </div>
                               </div>
                             </div>
@@ -1215,26 +1285,26 @@ function App() {
                         {/* Fichadas Huérfanas (Pendientes o Errores) */}
                         {huerfanos.length > 0 && (
                           <div className="space-y-1.5 pt-2 border-t border-dashed border-slate-200">
-                            <p className="text-[8px] font-black text-rose-500 uppercase tracking-widest flex items-center gap-0.5">
-                              <AlertTriangle className="w-3 h-3 text-rose-500" />
+                            <p className="text-xs font-black text-rose-500 uppercase tracking-widest flex items-center gap-1">
+                              <AlertTriangle className="w-3.5 h-3.5 text-rose-500" />
                               <span>Incompletos o errores</span>
                             </p>
                             {huerfanos.map((h: any, i: number) => (
                               <div key={i} className="flex justify-between items-center bg-rose-50/50 p-2 rounded-xl border border-rose-100">
-                                <div className="text-[10px] flex items-center">
-                                  <span className={`font-extrabold px-1.5 py-0.5 rounded text-[8px] mr-2 ${h.tipo === 'Entrada' ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
+                                <div className="text-xs flex items-center">
+                                  <span className={`font-black px-2 py-0.5 rounded-md text-[10px] mr-2 ${h.tipo === 'Entrada' ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
                                     {h.tipo.toUpperCase()}
                                   </span>
                                   <span className="font-extrabold text-slate-800 mr-2">{h.hora}</span>
-                                  <span className="text-slate-500 font-bold uppercase truncate max-w-[120px]">{h.user}</span>
+                                  <span className="text-slate-500 font-black uppercase truncate max-w-[120px]">{h.user}</span>
                                 </div>
                                 <div className="flex gap-2 items-center">
                                   {/* Botón inteligente para resolver y rellenar la ficha huérfana */}
                                   <button 
                                     onClick={() => abrirResolucionHuerfano(h, h.tipo === 'Entrada' ? 'Salida' : 'Entrada')}
-                                    className="bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 px-2 py-1 rounded text-[8px] font-black uppercase flex items-center gap-0.5 transition-colors shadow-sm"
+                                    className="bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 px-2.5 py-1.5 rounded-lg text-[10px] font-black uppercase flex items-center gap-1 transition-colors shadow-sm"
                                   >
-                                    <Plus className="w-2 h-2" /> Completar
+                                    <Plus className="w-3.5 h-3.5" /> Completar
                                   </button>
                                   
                                   {/* Botones normales de Edición y Borrado */}
@@ -1271,8 +1341,8 @@ function App() {
                   <TrendingUp className="w-5 h-5 text-blue-600" />
                   <span>Análisis de Jornada</span>
                 </h1>
-                <button onClick={handlePrint} className="bg-slate-900 hover:bg-slate-800 text-white px-2.5 py-1.5 rounded-lg text-[9px] font-black uppercase flex items-center gap-0.5 transition-colors shadow-sm">
-                  <Printer className="w-3 h-3" /> Reporte
+                <button onClick={handlePrint} className="bg-slate-900 hover:bg-slate-800 text-white px-3.5 py-2.5 rounded-lg text-xs font-black uppercase flex items-center gap-1 transition-colors shadow-sm">
+                  <Printer className="w-3.5 h-3.5" /> Reporte
                 </button>
               </div>
               
@@ -1280,7 +1350,7 @@ function App() {
                 <div className="bg-blue-800 p-3 rounded-2xl text-white shadow-md flex items-center gap-2 border border-blue-900">
                    <User className="w-5 h-5 text-blue-200" />
                    <select 
-                     className="flex-1 bg-transparent text-sm font-black outline-none border-none cursor-pointer" 
+                     className="flex-1 bg-transparent text-base font-black outline-none border-none cursor-pointer" 
                      value={usuarioAnalisisId} 
                      onChange={(e) => setUsuarioAnalisisId(e.target.value)}
                    >
@@ -1291,8 +1361,8 @@ function App() {
                 </div>
                 
                 <div className="grid grid-cols-2 gap-2">
-                  <input type="date" value={filtroDesde} onChange={(e) => setFiltroDesde(e.target.value)} className="p-2 bg-slate-100 border border-slate-200 rounded-xl text-xs font-bold outline-none" />
-                  <input type="date" value={filtroHasta} onChange={(e) => setFiltroHasta(e.target.value)} className="p-2 bg-slate-100 border border-slate-200 rounded-xl text-xs font-bold outline-none" />
+                  <input type="date" value={filtroDesde} onChange={(e) => setFiltroDesde(e.target.value)} className="p-2.5 bg-slate-100 border border-slate-200 rounded-xl text-sm font-bold outline-none" />
+                  <input type="date" value={filtroHasta} onChange={(e) => setFiltroHasta(e.target.value)} className="p-2.5 bg-slate-100 border border-slate-200 rounded-xl text-sm font-bold outline-none" />
                 </div>
               </div>
 
@@ -1301,15 +1371,15 @@ function App() {
                 <div className="bg-slate-50 border border-slate-200 p-3 rounded-[1.5rem] shadow-sm">
                   <div className="grid grid-cols-3 gap-1 text-center">
                     <div className="border-r border-slate-200 pr-1">
-                      <p className="text-[7.5px] font-black uppercase text-slate-400 mb-0.5 tracking-tight leading-none">Horas Totales</p>
+                      <p className="text-[9px] font-black uppercase text-slate-400 mb-0.5 tracking-tight leading-none">Horas Totales</p>
                       <p className="text-sm font-extrabold text-slate-900 tracking-tight">{Math.floor(stats.totalMin/60)}h {stats.totalMin%60}m</p>
                     </div>
                     <div className="border-r border-slate-200 px-1">
-                      <p className="text-[7.5px] font-black uppercase text-slate-400 mb-0.5 tracking-tight leading-none">Días Totales</p>
+                      <p className="text-[9px] font-black uppercase text-slate-400 mb-0.5 tracking-tight leading-none">Días Totales</p>
                       <p className="text-sm font-extrabold text-slate-900 tracking-tight">{stats.diasUnicos.size} d</p>
                     </div>
                     <div className="pl-1">
-                      <p className="text-[7.5px] font-black uppercase text-slate-400 mb-0.5 tracking-tight leading-none">Ratio Diario</p>
+                      <p className="text-[9px] font-black uppercase text-slate-400 mb-0.5 tracking-tight leading-none">Ratio Diario</p>
                       <p className="text-sm font-extrabold text-blue-700 tracking-tight">
                         {(() => {
                           const ratio = stats.diasUnicos.size > 0 ? Math.round(stats.totalMin / stats.diasUnicos.size) : 0;
@@ -1322,17 +1392,17 @@ function App() {
 
                 {/* Desglose de horas por Centro de Trabajo */}
                 <div className="space-y-2">
-                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-0.5">Horas por centro de trabajo</p>
+                  <p className="text-xs font-black text-slate-400 uppercase tracking-widest px-0.5">Horas por centro de trabajo</p>
                   
                   {Object.keys(stats.tareas || {}).length === 0 ? (
-                    <div className="text-center py-6 bg-slate-50 rounded-xl border text-xs text-slate-400 font-bold">
+                    <div className="text-center py-6 bg-slate-50 rounded-xl border text-sm text-slate-400 font-bold">
                       No hay horas registradas en este periodo.
                     </div>
                   ) : (
                     Object.entries(stats.tareas || {}).map(([tarea, mins]: any) => (
-                      <div key={tarea} className="bg-white border border-slate-200 p-3.5 rounded-xl flex justify-between items-center text-xs shadow-sm">
+                      <div key={tarea} className="bg-white border border-slate-200 p-4 rounded-xl flex justify-between items-center text-sm shadow-sm">
                         <span className="font-extrabold text-slate-700 uppercase tracking-tight">{tarea}</span>
-                        <span className="font-black text-blue-700 bg-blue-50 px-2.5 py-0.5 rounded-lg border border-blue-100">{Math.floor(mins/60)}h {mins%60}m</span>
+                        <span className="font-black text-blue-700 text-xs bg-blue-50 px-3 py-1 rounded-lg border border-blue-100">{Math.floor(mins/60)}h {mins%60}m</span>
                       </div>
                     ))
                   )}
@@ -1351,11 +1421,11 @@ function App() {
               
               {/* Mantenimiento de BD / Archivo */}
               <div className="bg-slate-50 p-3.5 rounded-[1.5rem] border border-slate-200 space-y-2.5 shadow-sm">
-                <p className="text-[9px] font-black text-blue-700 uppercase tracking-widest">Mantenimiento de Datos</p>
+                <p className="text-xs font-black text-blue-700 uppercase tracking-widest">Mantenimiento de Datos</p>
                 <div className="space-y-2">
-                  <label className="text-[9px] font-black text-slate-500 uppercase block px-0.5">Mover a histórico registros anteriores a la fecha:</label>
-                  <input type="date" value={fechaCorteArchivo} onChange={e => setFechaCorteArchivo(e.target.value)} className="w-full p-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold outline-none shadow-sm" />
-                  <button onClick={handleArchivar} className="w-full bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 py-2.5 rounded-xl font-black text-[9px] uppercase tracking-wider flex items-center justify-center gap-1.5 transition-colors shadow-sm">
+                  <label className="text-xs font-black text-slate-500 uppercase block px-0.5">Mover a histórico registros anteriores a la fecha:</label>
+                  <input type="date" value={fechaCorteArchivo} onChange={e => setFechaCorteArchivo(e.target.value)} className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-sm font-bold outline-none shadow-sm" />
+                  <button onClick={handleArchivar} className="w-full bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 py-3 rounded-xl font-black text-xs uppercase tracking-wider flex items-center justify-center gap-1.5 transition-colors shadow-sm">
                     📦 Archivar Datos Antiguos
                   </button>
                 </div>
@@ -1363,14 +1433,14 @@ function App() {
 
               {/* Gestión de Operarios */}
               <div className="bg-slate-50 p-3.5 rounded-[1.5rem] border border-slate-200 space-y-2.5 shadow-sm">
-                <p className="text-[9px] font-black text-blue-700 uppercase tracking-widest">Colaboradores</p>
+                <p className="text-xs font-black text-blue-700 uppercase tracking-widest">Colaboradores</p>
                 <div className="flex gap-1.5 bg-white p-1 rounded-xl border border-slate-200">
-                  <input type="text" value={nuevoOperario} onChange={(e) => setNuevoOperario(e.target.value)} placeholder="Nombre del nuevo colaborador..." className="flex-1 bg-transparent p-1.5 text-xs outline-none font-bold" />
+                  <input type="text" value={nuevoOperario} onChange={(e) => setNuevoOperario(e.target.value)} placeholder="Nombre del nuevo colaborador..." className="flex-1 bg-transparent p-2 text-sm outline-none font-bold" />
                   <button onClick={() => handleAddConfig('config_usuario', nuevoOperario)} className="bg-blue-600 hover:bg-blue-700 text-white w-9 h-9 flex items-center justify-center rounded-lg text-sm shadow transition-colors">➕</button>
                 </div>
                 <div className="max-h-28 overflow-y-auto space-y-1.5 pr-1 custom-scrollbar">
                   {usuarios.map((u: Usuario) => (
-                    <div key={u.id} className={`bg-white border p-1.5 rounded-lg flex justify-between items-center text-xs px-2.5 shadow-sm ${u.activo === false ? 'bg-slate-50/50 opacity-60' : ''}`}>
+                    <div key={u.id} className={`bg-white border p-2.5 rounded-lg flex justify-between items-center text-sm px-3 shadow-sm ${u.activo === false ? 'bg-slate-50/50 opacity-60' : ''}`}>
                       <span className={`font-bold text-slate-700 uppercase tracking-tight ${u.activo === false ? 'line-through text-slate-400' : ''}`}>{u.nombre} {u.activo === false && ' (INACTIVO)'}</span>
                       <div className="flex gap-2 items-center">
                         <button onClick={() => setEditandoConfig({ tipo: 'config_usuario', id: u.id, nombre: u.nombre })} className="text-slate-400 hover:text-blue-600 transition-colors">
@@ -1378,7 +1448,7 @@ function App() {
                         </button>
                         <button 
                           onClick={() => handleToggleEstado('config_usuario', u.id)} 
-                          className={`text-[8px] font-black px-2 py-1 rounded transition-all shadow-sm ${
+                          className={`text-[10px] font-black px-2.5 py-1.5 rounded transition-all shadow-sm ${
                             u.activo !== false ? 'bg-rose-50 text-rose-600 border border-rose-200' : 'bg-emerald-50 text-emerald-600 border border-emerald-200'
                           }`}
                         >
@@ -1392,14 +1462,14 @@ function App() {
 
               {/* Gestión de Centros */}
               <div className="bg-slate-50 p-3.5 rounded-[1.5rem] border border-slate-200 space-y-2.5 shadow-sm">
-                <p className="text-[9px] font-black text-emerald-700 uppercase tracking-widest">Centros de Trabajo</p>
+                <p className="text-xs font-black text-emerald-700 uppercase tracking-widest">Centros de Trabajo</p>
                 <div className="flex gap-1.5 bg-white p-1 rounded-xl border border-slate-200">
-                  <input type="text" value={nuevoCentro} onChange={(e) => setNuevoCentro(e.target.value)} placeholder="Nombre del nuevo centro..." className="flex-1 bg-transparent p-1.5 text-xs outline-none font-bold" />
+                  <input type="text" value={nuevoCentro} onChange={(e) => setNuevoCentro(e.target.value)} placeholder="Nombre del nuevo centro..." className="flex-1 bg-transparent p-2 text-sm outline-none font-bold" />
                   <button onClick={() => handleAddConfig('config_tarea', nuevoCentro)} className="bg-emerald-600 hover:bg-emerald-700 text-white w-9 h-9 flex items-center justify-center rounded-lg text-sm shadow transition-colors">➕</button>
                 </div>
                 <div className="max-h-28 overflow-y-auto space-y-1.5 pr-1 custom-scrollbar">
                   {tareas.map((t: Tarea) => (
-                    <div key={t.id} className={`bg-white border p-1.5 rounded-lg flex justify-between items-center text-xs px-2.5 shadow-sm ${t.activo === false ? 'bg-slate-50/50 opacity-60' : ''}`}>
+                    <div key={t.id} className={`bg-white border p-2.5 rounded-lg flex justify-between items-center text-sm px-3 shadow-sm ${t.activo === false ? 'bg-slate-50/50 opacity-60' : ''}`}>
                       <span className={`font-bold text-slate-700 uppercase tracking-tight ${t.activo === false ? 'line-through text-slate-400' : ''}`}>{t.nombre} {t.activo === false && ' (INACTIVO)'}</span>
                       <div className="flex gap-2 items-center">
                         <button onClick={() => setEditandoConfig({ tipo: 'config_tarea', id: t.id, nombre: t.nombre })} className="text-slate-400 hover:text-emerald-600 transition-colors">
@@ -1407,7 +1477,7 @@ function App() {
                         </button>
                         <button 
                           onClick={() => handleToggleEstado('config_tarea', t.id)} 
-                          className={`text-[8px] font-black px-2 py-1 rounded transition-all shadow-sm ${
+                          className={`text-[10px] font-black px-2.5 py-1.5 rounded transition-all shadow-sm ${
                             t.activo !== false ? 'bg-rose-50 text-rose-600 border border-rose-200' : 'bg-emerald-50 text-emerald-600 border border-emerald-200'
                           }`}
                         >
