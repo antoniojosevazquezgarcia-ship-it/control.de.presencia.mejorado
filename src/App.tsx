@@ -139,6 +139,15 @@ function App() {
     return fechaISO;
   };
 
+  const convertTimeToMinutes = (timeStr: string) => {
+    if (!timeStr) return 0;
+    const parts = timeStr.split(':').map(Number);
+    if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+      return parts[0] * 60 + parts[1];
+    }
+    return 0;
+  };
+
   useEffect(() => {
     const inicializar = async () => {
       setCargandoConfig(true);
@@ -205,7 +214,9 @@ function App() {
     if (registrosHoy.length === 0) return { estado: 'SIN_REGISTROS' };
 
     // Ordenar por hora para sacar el último marcaje
-    const ordenados = [...registrosHoy].sort((a, b) => a[1].localeCompare(b[1]));
+    const ordenados = [...registrosHoy].sort((a, b) => {
+      return convertTimeToMinutes(a[1]) - convertTimeToMinutes(b[1]);
+    });
     const ultimo = ordenados[ordenados.length - 1];
 
     return {
@@ -545,7 +556,7 @@ function App() {
       .sort((a, b) => {
         const dateCompare = a.iso.localeCompare(b.iso);
         if (dateCompare !== 0) return dateCompare;
-        return a.hR.localeCompare(b.hR);
+        return convertTimeToMinutes(a.hR) - convertTimeToMinutes(b.hR);
       });
 
     // 2. Procesar el listado ordenado para emparejar Entrada y Salida
