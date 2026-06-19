@@ -1,0 +1,22 @@
+{
+  "short_name": "Control CP",
+  "name": "Control de Presencia CP",
+  "description": "Aplicación personal y corporativa para control de presencia en centros de trabajo",
+  "icons": [
+    {
+      "src": "logo192.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "logo512.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": ".",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "theme_color": "#1e3a8a",
+  "background_color": "#ffffff"
+}
