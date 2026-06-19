@@ -911,7 +911,7 @@ function App() {
         <div className="report-title">Reporte de Control de Presencia</div>
         <p><strong>Periodo:</strong> {formatearFechaES(filtroDesde)} al {formatearFechaES(filtroHasta)}</p>
         <table>
-          <thead><tr><th>Fecha</th><th>Usuario</th><th>Centro</th><th>Entrada</th><th>Salida</th><th>Total</th></tr></thead>
+          <thead><tr><th>Fecha</th><th>Usuario</th><th>Centro</th><th>Entrada</th><th>Salida</th><th>Total</th><th>Ubicación</th></tr></thead>
           <tbody>
             {dataStore.dias.flatMap((dia: any) => 
               dia.tramos
@@ -919,6 +919,7 @@ function App() {
                 .map((t: any, i: number) => (
                   <tr key={i}>
                     <td>{formatearFechaES(dia.iso)}</td><td>{t.user}</td><td>{t.task}</td><td>{t.inicio}</td><td>{t.fin}</td><td>{t.durStr}</td>
+                    <td>{formatGPSObs(t.entradaGPS?.obs, t.salidaGPS?.obs)}</td>
                   </tr>
                 ))
             )}
