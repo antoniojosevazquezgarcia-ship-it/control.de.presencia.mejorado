@@ -36,6 +36,10 @@ function App() {
   const [usuarios, setUsuarios] = useState<Usuario[]>([]);
   const [tareas, setTareas] = useState<Tarea[]>([]);
   
+  // Estados para salida de la aplicación y modal de fichaje exitoso
+  const [appExited, setAppExited] = useState(false);
+  const [fichajeExitosoModal, setFichajeExitosoModal] = useState<{ accion: string; hora: string; cp?: string } | null>(null);
+  
   // Persistencia de los estados cargada desde localStorage
   const [usuarioId, setUsuarioId] = useState(() => localStorage.getItem('cp_usuarioId') || '');
   const [tareaId, setTareaId] = useState(() => localStorage.getItem('cp_tareaId') || '');
@@ -267,10 +271,12 @@ function App() {
         ));
         setMensaje({ texto: `¡${accion} confirmada con éxito (CP: ${cp})!`, tipo: 'exito' });
         setTimeout(() => setMensaje(null), 3000);
+        setFichajeExitosoModal({ accion, hora: horaActual, cp });
       } catch (e) { 
         console.error(e);
         setMensaje({ texto: 'Error al enviar coordenadas, guardado sin GPS.', tipo: 'info' });
         setTimeout(() => setMensaje(null), 3000);
+        setFichajeExitosoModal({ accion, hora: horaActual, cp: 'Sin GPS' });
       }
     }, async () => {
       // Fallback sin GPS
@@ -286,6 +292,7 @@ function App() {
       ));
       setMensaje({ texto: `¡${accion} registrada con éxito (Sin GPS)!`, tipo: 'exito' });
       setTimeout(() => setMensaje(null), 3000);
+      setFichajeExitosoModal({ accion, hora: horaActual, cp: 'Sin GPS' });
     });
   };
 
@@ -524,11 +531,26 @@ function App() {
   const dataStore = useMemo(() => {
     const diasMap: Record<string, any> = {};
     const analitica: Record<string, any> = {};
-    registrosBrutos.forEach((r: any[], idx: number) => {
-      if (idx === 0 || !r[0] || r[0] === "Fecha") return;
-      const [fR, hR, uName, acc, tName, lat, lon, obs, uId, tId] = r;
-      const p = fR.split(/[/.-]/);
-      const iso = p[0].length === 4 ? `${p[0]}-${p[1].padStart(2,'0')}-${p[2].padStart(2,'0')}` : `${p[2]}-${p[1].padStart(2,'0')}-${p[0].padStart(2,'0')}`;
+
+    // 1. Mapear y ordenar los registros cronológicamente por fecha y hora (independiente de la posición física de la fila en la hoja de cálculo)
+    const registrosOrdenados = registrosBrutos
+      .slice(1)
+      .filter((r: any[]) => r[0] && r[0] !== "Fecha")
+      .map((r: any[]) => {
+        const [fR, hR, uName, acc, tName, lat, lon, obs, uId, tId] = r;
+        const p = fR.split(/[/.-]/);
+        const iso = p[0].length === 4 ? `${p[0]}-${p[1].padStart(2,'0')}-${p[2].padStart(2,'0')}` : `${p[2]}-${p[1].padStart(2,'0')}-${p[0].padStart(2,'0')}`;
+        return { fR, hR, uName, acc, tName, lat, lon, obs, uId, tId, iso };
+      })
+      .sort((a, b) => {
+        const dateCompare = a.iso.localeCompare(b.iso);
+        if (dateCompare !== 0) return dateCompare;
+        return a.hR.localeCompare(b.hR);
+      });
+
+    // 2. Procesar el listado ordenado para emparejar Entrada y Salida
+    registrosOrdenados.forEach((item) => {
+      const { fR, hR, uName, acc, tName, lat, lon, obs, uId, tId, iso } = item;
       
       if (iso >= filtroDesde && iso <= filtroHasta) {
         if (!diasMap[iso]) diasMap[iso] = { iso, tramos: [], pends: [], huerfanos: [] };
@@ -580,6 +602,36 @@ function App() {
   }
 
   const stats = dataStore.analitica[usuarioAnalisisId] || { nombre: '', totalMin: 0, diasUnicos: new Set(), tareas: {} };
+
+  if (appExited) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center p-6 text-white font-sans text-center">
+        <div className="max-w-md w-full bg-slate-800 rounded-3xl p-8 border border-slate-700 shadow-2xl space-y-6">
+          <div className="w-20 h-20 bg-rose-500/10 border-2 border-rose-500 rounded-full flex items-center justify-center mx-auto text-rose-500 animate-pulse">
+            <LogOut className="w-10 h-10" />
+          </div>
+          <div className="space-y-2">
+            <h1 className="text-2xl font-black uppercase tracking-tight text-slate-100">Aplicación Cerrada</h1>
+            <p className="text-slate-400 text-sm font-semibold">
+              Tu fichaje ha sido guardado de forma segura en la nube.
+            </p>
+          </div>
+          <div className="p-4 bg-slate-850 rounded-2xl border border-slate-750 text-xs text-slate-400 leading-relaxed font-bold">
+            Ya puedes cerrar esta pestaña del navegador de forma segura, o pulsar abajo para volver.
+          </div>
+          <button 
+            onClick={() => {
+              setAppExited(false);
+              setUsuarioId(''); // limpiar usuario por seguridad al volver a abrir
+            }} 
+            className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-bold text-sm uppercase shadow-lg transition-all"
+          >
+            Volver a Iniciar
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-100 flex flex-col items-center justify-start p-3 md:p-6 text-slate-800 font-sans">
@@ -729,6 +781,50 @@ function App() {
         </div>
       )}
 
+      {/* MODAL FICHAJE EXITOSO / OPCIÓN DE SALIR */}
+      {fichajeExitosoModal && (
+        <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 print:hidden">
+          <div className="bg-white w-full max-w-sm rounded-[2rem] p-6 shadow-2xl space-y-6 border border-slate-100 text-center">
+            <div className="w-16 h-16 bg-emerald-500/10 border-2 border-emerald-500 rounded-full flex items-center justify-center mx-auto text-emerald-500">
+              <Clock className="w-8 h-8 animate-pulse" />
+            </div>
+            <div className="space-y-2">
+              <h2 className="text-xl font-black uppercase tracking-tight text-slate-900">¡Fichaje Confirmado!</h2>
+              <p className="text-sm font-bold text-slate-650">
+                Se ha registrado tu <span className="font-extrabold text-blue-700">{fichajeExitosoModal.accion.toUpperCase()}</span> a las <span className="font-extrabold text-blue-700">{fichajeExitosoModal.hora}</span>.
+              </p>
+              <p className="text-[10px] text-slate-400">Ubicación registrada: {fichajeExitosoModal.cp}</p>
+            </div>
+            <div className="flex flex-col gap-2 pt-2">
+              <button 
+                onClick={() => {
+                  setTabActiva('informes');
+                  setFichajeExitosoModal(null);
+                }} 
+                className="w-full py-3 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-xl font-black text-xs uppercase shadow-sm transition-all"
+              >
+                🔍 Ver en el Diario
+              </button>
+              <button 
+                onClick={() => {
+                  setFichajeExitosoModal(null);
+                  setAppExited(true);
+                }} 
+                className="w-full py-3 bg-rose-600 hover:bg-rose-700 text-white rounded-xl font-black text-xs uppercase shadow-md transition-all"
+              >
+                🚪 Salir de la aplicación
+              </button>
+              <button 
+                onClick={() => setFichajeExitosoModal(null)} 
+                className="w-full py-2 font-bold text-[10px] text-slate-400 uppercase tracking-widest hover:text-slate-600 mt-1"
+              >
+                Volver a Fichar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* REPORTE DE IMPRESIÓN */}
       <div className="hidden print:block w-full">
         <div className="report-title">Reporte de Control de Presencia</div>
@@ -751,6 +847,24 @@ function App() {
 
       {/* APLICACIÓN VISUAL */}
       <div className="w-full max-w-md bg-white rounded-[2.5rem] shadow-xl p-4 flex flex-col min-h-[92vh] border border-slate-100 overflow-hidden relative print:hidden">
+        
+        {/* CABECERA DE LA APP CON BOTÓN GLOBAL DE SALIR */}
+        <div className="flex justify-between items-center border-b pb-2 mb-3">
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs font-black uppercase tracking-widest text-slate-400">Control CP</span>
+          </div>
+          <button 
+            onClick={() => {
+              if (window.confirm("¿Deseas salir de la aplicación?")) {
+                setAppExited(true);
+              }
+            }} 
+            className="text-[10px] font-black text-rose-500 hover:text-rose-700 transition-colors flex items-center gap-1 bg-rose-50 px-2.5 py-1.5 rounded-lg border border-rose-100/50 shadow-sm"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span>SALIR</span>
+          </button>
+        </div>
         
         {/* Barra superior de pestañas táctiles */}
         <div className="flex bg-slate-100 p-1 rounded-2xl mb-4 flex-shrink-0">
