@@ -868,46 +868,42 @@ function App() {
       {modalSalirOpen && (
         <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-50 flex items-center justify-center p-4 print:hidden animate-in fade-in duration-150">
           <div className="bg-white w-full max-w-sm rounded-[2rem] p-6 shadow-2xl space-y-5 border border-slate-100 text-center">
-            <div className="w-14 h-14 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center mx-auto border-2 border-blue-100">
+            <div className="w-14 h-14 bg-emerald-50 text-emerald-600 rounded-full flex items-center justify-center mx-auto border-2 border-emerald-100">
               <CheckCircle2 className="w-7 h-7" />
             </div>
             
             <div className="space-y-1.5">
-              <h2 className="text-lg font-black uppercase tracking-tight text-slate-900">Jornada y Fichajes Guardados</h2>
-              <p className="text-xs text-slate-500 font-semibold leading-relaxed">
-                Tus registros están sincronizados de forma segura en la nube.
+              <h2 className="text-lg font-black uppercase tracking-tight text-slate-900">Jornada Guardada</h2>
+              <p className="text-xs text-slate-600 font-semibold leading-relaxed">
+                Tus fichajes están registrados y sincronizados con éxito en la nube.
+              </p>
+            </div>
+
+            <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-3 text-xs text-slate-600 text-left space-y-1">
+              <p className="font-bold text-slate-800 flex items-center gap-1.5">
+                <span>💡 Para salir de la app:</span>
+              </p>
+              <p className="text-[11px] text-slate-500 font-medium">
+                Cierra la pestaña de tu navegador con la <strong>✕ superior</strong> o cambia de aplicación. Tus datos no se perderán.
               </p>
             </div>
 
             <div className="space-y-2 pt-1">
               <button 
                 onClick={() => {
-                  try {
-                    window.close();
-                  } catch {}
-                  setModalSalirOpen(false);
-                }} 
-                className="w-full py-3.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold text-xs uppercase shadow-md transition-all flex items-center justify-center gap-1.5 cursor-pointer"
-              >
-                <LogOut className="w-4 h-4" />
-                <span>Cerrar pestaña / Salir</span>
-              </button>
-
-              <button 
-                onClick={() => {
                   handleCambiarColaborador();
                   setModalSalirOpen(false);
                 }} 
-                className="w-full py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold text-xs uppercase transition-all cursor-pointer"
+                className="w-full py-3 bg-blue-50 hover:bg-blue-100 text-blue-800 border border-blue-200 rounded-xl font-bold text-xs uppercase transition-all cursor-pointer flex items-center justify-center gap-1.5"
               >
-                Cambiar de colaborador
+                <span>Cambiar de colaborador</span>
               </button>
 
               <button 
                 onClick={() => setModalSalirOpen(false)} 
-                className="w-full py-2 text-[11px] font-bold text-slate-400 hover:text-slate-600 uppercase tracking-wider cursor-pointer"
+                className="w-full py-3 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold text-xs uppercase shadow-sm transition-all cursor-pointer"
               >
-                Permanecer en la aplicación
+                Continuar en la aplicación
               </button>
             </div>
           </div>
