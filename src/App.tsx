@@ -739,6 +739,49 @@ function App() {
     };
   }, [registrosBrutos, filtroDesde, filtroHasta]);
 
+  // Resumen del rango de fechas presente en la base de datos activa
+  const estadoBDActiva = useMemo(() => {
+    const fechas = registrosBrutos
+      .slice(1)
+      .filter(r => r[0] && r[0] !== 'Fecha')
+      .map(r => {
+        const fR = String(r[0]);
+        const p = fR.split(/[/.-]/);
+        return p[0].length === 4 ? `${p[0]}-${p[1].padStart(2,'0')}-${p[2].padStart(2,'0')}` : `${p[2]}-${p[1].padStart(2,'0')}-${p[0].padStart(2,'0')}`;
+      })
+      .filter(f => !isNaN(Date.parse(f)))
+      .sort();
+
+    if (fechas.length === 0) return null;
+    return {
+      masAntigua: fechas[0],
+      masReciente: fechas[fechas.length - 1],
+      total: fechas.length
+    };
+  }, [registrosBrutos]);
+
+  // Previsualización de cuántos registros se archivarán con la fecha de corte seleccionada
+  const previsualizacionArchivo = useMemo(() => {
+    if (!fechaCorteArchivo || !estadoBDActiva) return null;
+    let aMover = 0;
+    let aMantener = 0;
+    
+    registrosBrutos.slice(1).forEach(r => {
+      if (!r[0] || r[0] === 'Fecha') return;
+      const fR = String(r[0]);
+      const p = fR.split(/[/.-]/);
+      const iso = p[0].length === 4 ? `${p[0]}-${p[1].padStart(2,'0')}-${p[2].padStart(2,'0')}` : `${p[2]}-${p[1].padStart(2,'0')}-${p[0].padStart(2,'0')}`;
+      if (iso <= fechaCorteArchivo) {
+        aMover++;
+      } else {
+        aMantener++;
+      }
+    });
+
+    return { aMover, aMantener };
+  }, [fechaCorteArchivo, registrosBrutos, estadoBDActiva]);
+
+
   if (cargandoInicial) {
     return (
       <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center font-bold text-blue-800 animate-pulse text-sm text-center tracking-widest uppercase p-4">
@@ -1474,21 +1517,29 @@ function App() {
                   </p>
                 </div>
 
+                {/* Estado actual de la base de datos activa */}
+                {estadoBDActiva && (
+                  <div className="bg-white border border-slate-200 rounded-xl p-3 text-xs space-y-1 shadow-sm">
+                    <div className="flex justify-between items-center text-slate-500 font-bold text-[11px]">
+                      <span>📊 Registros activos en la hoja:</span>
+                      <span className="font-extrabold text-blue-800 bg-blue-50 px-2 py-0.5 rounded-md border border-blue-100">{estadoBDActiva.total} registros</span>
+                    </div>
+                    <p className="text-slate-700 font-medium text-xs">
+                      Periodo activo: del <strong className="text-blue-900 font-black">{formatearFechaES(estadoBDActiva.masAntigua)}</strong> al <strong className="text-blue-900 font-black">{formatearFechaES(estadoBDActiva.masReciente)}</strong>
+                    </p>
+                  </div>
+                )}
+
                 {/* Tarjeta Informativa del Último Volcado a Histórico */}
-                {ultimoVolcado ? (
+                {ultimoVolcado && (
                   <div className="bg-blue-50/80 border border-blue-200 rounded-xl p-3 text-xs space-y-1">
                     <div className="flex items-center justify-between text-blue-900 font-bold text-[11px]">
-                      <span>Último volcado realizado:</span>
+                      <span>Último volcado registrado:</span>
                       <span className="text-slate-500 font-medium">{ultimoVolcado.fechaEjecucion}</span>
                     </div>
                     <p className="text-slate-700 font-medium text-xs">
                       Registros archivados anteriores a: <strong className="text-blue-800 font-black">{formatearFechaES(ultimoVolcado.fechaCorte)}</strong>
                     </p>
-                  </div>
-                ) : (
-                  <div className="bg-slate-100/80 border border-slate-200 rounded-xl p-2.5 text-[11px] text-slate-500 font-medium flex items-center gap-1.5">
-                    <Archive className="w-3.5 h-3.5 text-slate-400" />
-                    <span>No hay registros de volcados previos guardados.</span>
                   </div>
                 )}
 
@@ -1497,17 +1548,52 @@ function App() {
                     <label className="text-[11px] font-black text-slate-500 uppercase block px-0.5">
                       Mover a histórico registros hasta la fecha:
                     </label>
-                    {ultimoVolcado && (
-                      <button 
-                        type="button" 
-                        onClick={() => setFechaCorteArchivo(ultimoVolcado.fechaCorte)}
-                        className="text-[10px] font-bold text-blue-600 hover:text-blue-800 flex items-center gap-0.5"
-                        title="Usar la fecha del último volcado"
-                      >
-                        <RotateCcw className="w-2.5 h-2.5" />
-                        <span>Última fecha</span>
-                      </button>
-                    )}
+                  </div>
+
+                  {/* Sugerencias rápidas de fecha de corte */}
+                  <div className="flex flex-wrap gap-1.5 pb-0.5">
+                    {(() => {
+                      const hoy = new Date();
+                      const finMesAnterior = new Date(hoy.getFullYear(), hoy.getMonth(), 0).toISOString().split('T')[0];
+                      const hace30d = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+                      
+                      return (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => setFechaCorteArchivo(finMesAnterior)}
+                            className={`text-[10px] font-bold px-2.5 py-1 rounded-lg border transition-all ${
+                              fechaCorteArchivo === finMesAnterior
+                                ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                                : 'bg-white text-slate-600 border-slate-200 hover:border-blue-300'
+                            }`}
+                          >
+                            Fin mes anterior ({formatearFechaES(finMesAnterior)})
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setFechaCorteArchivo(hace30d)}
+                            className={`text-[10px] font-bold px-2.5 py-1 rounded-lg border transition-all ${
+                              fechaCorteArchivo === hace30d
+                                ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                                : 'bg-white text-slate-600 border-slate-200 hover:border-blue-300'
+                            }`}
+                          >
+                            Hace 30 días ({formatearFechaES(hace30d)})
+                          </button>
+                          {ultimoVolcado && (
+                            <button
+                              type="button"
+                              onClick={() => setFechaCorteArchivo(ultimoVolcado.fechaCorte)}
+                              className="text-[10px] font-bold px-2.5 py-1 rounded-lg border bg-white text-blue-700 border-blue-200 hover:bg-blue-50"
+                            >
+                              <RotateCcw className="w-2.5 h-2.5 inline mr-0.5" />
+                              Último corte ({formatearFechaES(ultimoVolcado.fechaCorte)})
+                            </button>
+                          )}
+                        </>
+                      );
+                    })()}
                   </div>
 
                   <input 
@@ -1517,9 +1603,18 @@ function App() {
                     className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold outline-none shadow-sm focus:border-blue-500" 
                   />
 
+                  {/* Previsualización en vivo del impacto del volcado */}
+                  {previsualizacionArchivo && (
+                    <div className="bg-amber-50 border border-amber-200 text-amber-900 rounded-xl p-2.5 text-[11px] font-semibold flex items-center justify-between">
+                      <span>Moverá: <strong className="font-extrabold text-amber-950">{previsualizacionArchivo.aMover}</strong> registros</span>
+                      <span>Quedarán activos: <strong className="font-extrabold text-amber-950">{previsualizacionArchivo.aMantener}</strong> registros</span>
+                    </div>
+                  )}
+
                   <button 
                     onClick={handleArchivar} 
-                    className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-xl font-black text-xs uppercase tracking-wider flex items-center justify-center gap-1.5 transition-colors shadow-sm cursor-pointer"
+                    disabled={!fechaCorteArchivo}
+                    className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white py-3 rounded-xl font-black text-xs uppercase tracking-wider flex items-center justify-center gap-1.5 transition-colors shadow-sm cursor-pointer"
                   >
                     <Archive className="w-3.5 h-3.5" />
                     <span>Archivar Datos Antiguos</span>
