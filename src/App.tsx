@@ -644,10 +644,23 @@ function App() {
       setUltimoVolcado(nuevoInfoVolcado);
       localStorage.setItem('cp_ultimo_volcado', JSON.stringify(nuevoInfoVolcado));
 
+      // Actualización optimista local inmediata del conteo y listado de registros activos
+      setRegistrosBrutos(prev => {
+        const actualizados = prev.filter((r, idx) => {
+          if (idx === 0 || !r[0] || r[0] === 'Fecha') return true;
+          const fR = String(r[0]).trim();
+          const p = fR.split(/[\/\.\-]/);
+          const iso = p.length === 3 ? (p[0].length === 4 ? `${p[0]}-${p[1].padStart(2,'0')}-${p[2].padStart(2,'0')}` : `${p[2]}-${p[1].padStart(2,'0')}-${p[0].padStart(2,'0')}`) : '';
+          return !iso || iso > fechaCorteArchivo;
+        });
+        localStorage.setItem('cp_cache_registros', JSON.stringify(actualizados));
+        return actualizados;
+      });
+
       setMensaje({ texto: `¡Archivado completado! Registros hasta ${formatearFechaES(fechaCorteArchivo)} movidos a histórico.`, tipo: 'exito' });
       setFechaCorteArchivo('');
       setTimeout(() => setMensaje(null), 3500);
-      refrescarDatos();
+      setTimeout(() => refrescarDatos(), 3000);
     } catch (e) { 
       setMensaje(null); 
     }
