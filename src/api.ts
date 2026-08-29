@@ -7,7 +7,10 @@ const URL_WEB_APP = "https://script.google.com/macros/s/AKfycbyZJ9CjNob4jYvPI45K
 
 export const obtenerConfiguracion = async (): Promise<ConfiguracionResponse> => {
   try {
-    const res = await fetch(`${URL_WEB_APP}?_t=${Date.now()}`);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 7000);
+    const res = await fetch(`${URL_WEB_APP}?_t=${Date.now()}`, { signal: controller.signal });
+    clearTimeout(timeoutId);
     return await res.json();
   } catch (error) { 
     console.error("Error al obtener configuración:", error);
@@ -51,18 +54,28 @@ export const archivarDatosAntiguos = async (fechaCorte: string) => {
 
 export const obtenerCodigoPostal = async (lat: number, lon: number): Promise<string> => {
   try {
-    const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}`);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3500);
+    const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}`, {
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
     const data = await res.json();
     return data.address?.postcode || "S/N";
   } catch (error) { 
     console.error("Error al geocodificar CP:", error);
-    return "Error CP"; 
+    return "S/N"; 
   }
 };
 
 export const obtenerRegistros = async (incluirHistorico: boolean = false): Promise<any[]> => {
   try {
-    const res = await fetch(`${URL_WEB_APP}?action=get_registros&incluirHistorico=${incluirHistorico}&_t=${Date.now()}`);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 9000);
+    const res = await fetch(`${URL_WEB_APP}?action=get_registros&incluirHistorico=${incluirHistorico}&_t=${Date.now()}`, {
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
     const data = await res.json();
     return Array.isArray(data) ? data : [];
   } catch (error) { 

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   obtenerConfiguracion, 
   enviarFichaje, 
@@ -27,19 +27,53 @@ import {
   CalendarDays, 
   User, 
   FolderPlus,
-  RefreshCw,
-  FolderOpen
+  RefreshCw, 
+  FolderOpen,
+  CheckCircle2,
+  Archive,
+  Zap,
+  RotateCcw
 } from 'lucide-react';
 
 function App() {
   const [tabActiva, setTabActiva] = useState('fichaje');
-  const [usuarios, setUsuarios] = useState<Usuario[]>([]);
-  const [tareas, setTareas] = useState<Tarea[]>([]);
-  
-  // Estados para salida de la aplicación y modal de fichaje exitoso
-  const [appExited, setAppExited] = useState(false);
-  const [fichajeExitosoModal, setFichajeExitosoModal] = useState<{ accion: string; hora: string; cp?: string } | null>(null);
-  
+
+  // --- 1. CARGA INSTANTÁNEA DESDE CACHÉ LOCAL (0 SEGUNDOS DE ESPERA) ---
+  const [usuarios, setUsuarios] = useState<Usuario[]>(() => {
+    try {
+      const c = localStorage.getItem('cp_cache_usuarios');
+      return c ? JSON.parse(c) : [];
+    } catch { return []; }
+  });
+
+  const [tareas, setTareas] = useState<Tarea[]>(() => {
+    try {
+      const c = localStorage.getItem('cp_cache_tareas');
+      return c ? JSON.parse(c) : [];
+    } catch { return []; }
+  });
+
+  const [registrosBrutos, setRegistrosBrutos] = useState<any[]>(() => {
+    try {
+      const c = localStorage.getItem('cp_cache_registros');
+      return c ? JSON.parse(c) : [];
+    } catch { return []; }
+  });
+
+  // Solo mostramos pantalla de carga si no existe NINGÚN dato previo en caché
+  const [cargandoInicial, setCargandoInicial] = useState(() => {
+    return !localStorage.getItem('cp_cache_usuarios');
+  });
+  const [sincronizandoFondo, setSincronizandoFondo] = useState(false);
+
+  // --- 2. REGISTRO Y PERSISTENCIA DEL ÚLTIMO VOLCADO A HISTÓRICO ---
+  const [ultimoVolcado, setUltimoVolcado] = useState<{ fechaCorte: string; fechaEjecucion: string } | null>(() => {
+    try {
+      const v = localStorage.getItem('cp_ultimo_volcado');
+      return v ? JSON.parse(v) : null;
+    } catch { return null; }
+  });
+
   // Persistencia de los estados cargada desde localStorage
   const [usuarioId, setUsuarioId] = useState(() => localStorage.getItem('cp_usuarioId') || '');
   const [tareaId, setTareaId] = useState(() => localStorage.getItem('cp_tareaId') || '');
@@ -49,10 +83,19 @@ function App() {
   
   const [nuevoOperario, setNuevoOperario] = useState('');
   const [nuevoCentro, setNuevoCentro] = useState('');
-  const [registrosBrutos, setRegistrosBrutos] = useState<any[]>([]);
-  const [cargandoConfig, setCargandoConfig] = useState(true);
   const [refrescando, setRefrescando] = useState(false);
   const [mensaje, setMensaje] = useState<{ texto: string; tipo: 'exito' | 'error' | 'info' } | null>(null);
+
+  // Notificación flotante Toast para fichaje instantáneo (sin modales engorrosos)
+  const [toastFichaje, setToastFichaje] = useState<{
+    visible: boolean;
+    accion: string;
+    hora: string;
+    usuario: string;
+    cp?: string;
+    estado: 'guardando' | 'completado' | 'error';
+  } | null>(null);
+  const toastTimeoutRef = useRef<any>(null);
   
   // Estados de Históricos, Edición e Impresión
   const [incluirHistorico, setIncluirHistorico] = useState(false);
@@ -71,7 +114,7 @@ function App() {
   const [formManualAction, setFormManualAction] = useState('Entrada');
   const [formManualIsResolution, setFormManualIsResolution] = useState(false);
 
-  // Reloj en tiempo real para hacer el diseño más dinámico y profesional
+  // Reloj en tiempo real
   const [horaActualLocal, setHoraActualLocal] = useState('');
   const [fechaActualLocal, setFechaActualLocal] = useState('');
 
@@ -83,25 +126,11 @@ function App() {
   const [filtroHasta, setFiltroHasta] = useState(() => new Date().toISOString().split('T')[0]);
 
   // Sincronizar persistencia con localStorage
-  useEffect(() => {
-    localStorage.setItem('cp_usuarioId', usuarioId);
-  }, [usuarioId]);
-
-  useEffect(() => {
-    localStorage.setItem('cp_tareaId', tareaId);
-  }, [tareaId]);
-
-  useEffect(() => {
-    localStorage.setItem('cp_usuarioDiarioId', usuarioDiarioId);
-  }, [usuarioDiarioId]);
-
-  useEffect(() => {
-    localStorage.setItem('cp_tareaDiarioId', tareaDiarioId);
-  }, [tareaDiarioId]);
-
-  useEffect(() => {
-    localStorage.setItem('cp_usuarioAnalisisId', usuarioAnalisisId);
-  }, [usuarioAnalisisId]);
+  useEffect(() => { localStorage.setItem('cp_usuarioId', usuarioId); }, [usuarioId]);
+  useEffect(() => { localStorage.setItem('cp_tareaId', tareaId); }, [tareaId]);
+  useEffect(() => { localStorage.setItem('cp_usuarioDiarioId', usuarioDiarioId); }, [usuarioDiarioId]);
+  useEffect(() => { localStorage.setItem('cp_tareaDiarioId', tareaDiarioId); }, [tareaDiarioId]);
+  useEffect(() => { localStorage.setItem('cp_usuarioAnalisisId', usuarioAnalisisId); }, [usuarioAnalisisId]);
 
   // Actualizar reloj dinámico
   useEffect(() => {
@@ -118,7 +147,7 @@ function App() {
   const formatearFechaES = (fechaISO: string) => {
     if (!fechaISO) return '';
     const partes = fechaISO.split('-');
-    return partes.length === 3 ? `${partes[2]}-${partes[1]}-${partes[0]}` : fechaISO;
+    return partes.length === 3 ? `${partes[2]}/${partes[1]}/${partes[0]}` : fechaISO;
   };
 
   const convertToISODate = (fechaES: string) => {
@@ -162,54 +191,72 @@ function App() {
     return eObs || sObs || 'S/N';
   };
 
+  // Sincronización en segundo plano al montar la aplicación
   useEffect(() => {
-    const inicializar = async () => {
-      setCargandoConfig(true);
+    const sincronizarDatos = async () => {
+      setSincronizandoFondo(true);
       try {
         const [config, registros] = await Promise.all([obtenerConfiguracion(), obtenerRegistros(false)]);
-        setUsuarios(config.usuarios || []);
-        setTareas(config.tareas || []);
-        setRegistrosBrutos(registros || []);
         
-        // 1. Sincronización del Usuario por Defecto (si no hay guardado en localStorage)
-        const usuariosActivos = (config.usuarios || []).filter(u => u.activo !== false);
-        if (usuariosActivos.length > 0) {
-          if (!usuarioId) {
-            setUsuarioId(''); // Dejar vacío para forzar selección la primera vez
-          }
-          if (!usuarioAnalisisId) {
-            setUsuarioAnalisisId(usuariosActivos[0].id);
+        if (config.usuarios && config.usuarios.length > 0) {
+          setUsuarios(config.usuarios);
+          localStorage.setItem('cp_cache_usuarios', JSON.stringify(config.usuarios));
+          
+          const usuariosActivos = config.usuarios.filter(u => u.activo !== false);
+          if (usuariosActivos.length > 0) {
+            if (!usuarioAnalisisId) setUsuarioAnalisisId(usuariosActivos[0].id);
           }
         }
         
-        // 2. Sincronización del Centro por Defecto
-        const tareasActivas = (config.tareas || []).filter(t => t.activo !== false);
-        if (tareasActivas.length > 0 && !tareaId) {
-          const def = tareasActivas.find((t: Tarea) => t.esDefault);
-          setTareaId(def ? def.id : tareasActivas[0].id);
+        if (config.tareas && config.tareas.length > 0) {
+          setTareas(config.tareas);
+          localStorage.setItem('cp_cache_tareas', JSON.stringify(config.tareas));
+          
+          const tareasActivas = config.tareas.filter(t => t.activo !== false);
+          if (tareasActivas.length > 0 && !tareaId) {
+            const def = tareasActivas.find((t: Tarea) => t.esDefault);
+            setTareaId(def ? def.id : tareasActivas[0].id);
+          }
+        }
+
+        if (registros && registros.length > 0) {
+          setRegistrosBrutos(registros);
+          localStorage.setItem('cp_cache_registros', JSON.stringify(registros));
         }
       } catch (e) { 
-        console.error(e); 
+        console.error("Error sincronizando en segundo plano:", e); 
       } finally { 
-        setCargandoConfig(false); 
+        setCargandoInicial(false);
+        setSincronizandoFondo(false);
       }
     };
-    inicializar();
+
+    sincronizarDatos();
   }, []);
 
   const refrescarDatos = async (forzarHistorico?: boolean) => {
     setRefrescando(true);
     const consultarH = forzarHistorico !== undefined ? forzarHistorico : incluirHistorico;
-    const data = await obtenerRegistros(consultarH);
-    setRegistrosBrutos(data);
-    setRefrescando(false);
+    try {
+      const data = await obtenerRegistros(consultarH);
+      if (Array.isArray(data) && data.length > 0) {
+        setRegistrosBrutos(data);
+        if (!consultarH) {
+          localStorage.setItem('cp_cache_registros', JSON.stringify(data));
+        }
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setRefrescando(false);
+    }
   };
 
   useEffect(() => {
-    if (tabActiva !== 'fichaje' && !cargandoConfig) {
+    if (tabActiva !== 'fichaje' && !cargandoInicial) {
       refrescarDatos();
     }
-  }, [tabActiva, incluirHistorico, cargandoConfig]);
+  }, [tabActiva, incluirHistorico, cargandoInicial]);
 
   const handlePrint = () => window.print();
 
@@ -240,21 +287,22 @@ function App() {
     };
   }, [usuarioId, registrosBrutos]);
 
+  // --- 3. FICHAJE ULTRA-ÁGIL E INSTANTÁNEO (< 100ms) ---
   const handleFichaje = async (accion: 'Entrada' | 'Salida') => {
     if (!usuarioId) return;
 
-    // Control de robustez: Advertencia interactiva por doble Entrada o doble Salida
+    // Control de advertencia por doble Entrada o doble Salida
     if (estadoUsuarioHoy) {
       if (accion === 'Entrada' && estadoUsuarioHoy.estado === 'DENTRO') {
         const confirmar = window.confirm(
           `¡Atención! Tu último registro de hoy es de ENTRADA (a las ${estadoUsuarioHoy.hora} en ${estadoUsuarioHoy.centro}). ` + 
-          `¿Estás seguro de que quieres registrar otra ENTRADA sin haber cerrado la jornada anterior?`
+          `¿Quieres registrar otra ENTRADA?`
         );
         if (!confirmar) return;
       } else if (accion === 'Salida' && estadoUsuarioHoy.estado === 'FUERA') {
         const confirmar = window.confirm(
           `¡Atención! Tu último registro de hoy es de SALIDA (a las ${estadoUsuarioHoy.hora}). ` + 
-          `¿Estás seguro de que quieres registrar otra SALIDA sin haber fichado la entrada previa?`
+          `¿Quieres registrar otra SALIDA?`
         );
         if (!confirmar) return;
       } else if (accion === 'Salida' && estadoUsuarioHoy.estado === 'SIN_REGISTROS') {
@@ -271,82 +319,106 @@ function App() {
     const fechaActual = new Date().toLocaleDateString('es-ES');
     const horaActual = new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
     
+    // Vibración háptica en móviles si está soportado
+    if (typeof navigator !== 'undefined' && navigator.vibrate) {
+      navigator.vibrate(60);
+    }
+
+    // 1. ACTUALIZACIÓN OPTIMISTA INMEDIATA (La UI responde al instante)
     const nuevoRegistroProvisional = [
       fechaActual, horaActual, user?.nombre || '', accion, task?.nombre || '',
       '0', '0', 'Sincronizando...', user?.id || '', task?.id || ''
     ];
     
-    // Actualizar localmente de inmediato para dar feedback rápido
-    setRegistrosBrutos(prev => [...prev, nuevoRegistroProvisional]);
-    setMensaje({ texto: `¡Marcaje de ${accion.toUpperCase()} registrado! Sincronizando...`, tipo: 'info' });
+    setRegistrosBrutos(prev => {
+      const updated = [...prev, nuevoRegistroProvisional];
+      localStorage.setItem('cp_cache_registros', JSON.stringify(updated));
+      return updated;
+    });
 
-    navigator.geolocation.getCurrentPosition(async (pos) => {
+    // 2. MOSTRAR TOAST FLOTANTE ULTRA-RÁPIDO
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    setToastFichaje({
+      visible: true,
+      accion,
+      hora: horaActual,
+      usuario: user?.nombre || 'Colaborador',
+      estado: 'guardando'
+    });
+
+    // 3. OBTENCIÓN DE GPS RÁPIDO Y ENVÍO EN SEGUNDO PLANO
+    const finalizarEnvio = async (lat: number, lon: number, obs: string) => {
       try {
-        const cp = await obtenerCodigoPostal(pos.coords.latitude, pos.coords.longitude);
         await enviarFichaje({
           tipoAccion: "fichaje", fecha: fechaActual, hora: horaActual,
           usuarioId: user?.id, usuarioNombre: user?.nombre, accion,
           tareaId: task?.id, tareaNombre: task?.nombre,
-          latitud: pos.coords.latitude, longitud: pos.coords.longitude, observaciones: cp 
+          latitud: lat, longitud: lon, observaciones: obs 
         });
-        setRegistrosBrutos(prev => prev.map(r => 
-          (r[8] === user?.id && r[9] === task?.id && r[0] === fechaActual && r[1] === horaActual)
-            ? [fechaActual, horaActual, user?.nombre || '', accion, task?.nombre || '', String(pos.coords.latitude), String(pos.coords.longitude), cp, user?.id || '', task?.id || '']
-            : r
-        ));
-        setMensaje({ texto: `¡${accion} confirmada con éxito (CP: ${cp})!`, tipo: 'exito' });
-        setTimeout(() => setMensaje(null), 3000);
-        setFichajeExitosoModal({ accion, hora: horaActual, cp });
-      } catch (e) { 
-        console.error(e);
-        setMensaje({ texto: 'Error al enviar coordenadas, guardado sin GPS.', tipo: 'info' });
-        setTimeout(() => setMensaje(null), 3000);
-        setFichajeExitosoModal({ accion, hora: horaActual, cp: 'Sin GPS' });
+
+        setRegistrosBrutos(prev => {
+          const updated = prev.map(r => 
+            (r[8] === user?.id && r[9] === task?.id && r[0] === fechaActual && r[1] === horaActual)
+              ? [fechaActual, horaActual, user?.nombre || '', accion, task?.nombre || '', String(lat), String(lon), obs, user?.id || '', task?.id || '']
+              : r
+          );
+          localStorage.setItem('cp_cache_registros', JSON.stringify(updated));
+          return updated;
+        });
+
+        setToastFichaje(prev => prev ? { ...prev, estado: 'completado', cp: obs } : null);
+        toastTimeoutRef.current = setTimeout(() => {
+          setToastFichaje(null);
+        }, 3800);
+      } catch (err) {
+        console.error("Error enviando fichaje:", err);
+        setToastFichaje(prev => prev ? { ...prev, estado: 'completado', cp: 'Guardado local' } : null);
+        toastTimeoutRef.current = setTimeout(() => {
+          setToastFichaje(null);
+        }, 3800);
       }
-    }, async (err) => {
-      let mensajeError = "Sin GPS";
-      if (err.code === 1) {
-        mensajeError = "Permiso GPS denegado";
-        alert("Atención: Has denegado los permisos de geolocalización. Actívalos en los ajustes de tu navegador para que la aplicación registre tu ubicación.");
-      } else if (err.code === 2) {
-        mensajeError = "Ubicación no disponible";
-      } else if (err.code === 3) {
-        mensajeError = "Tiempo espera GPS agotado";
-      }
-      
-      await enviarFichaje({
-        tipoAccion: "fichaje", fecha: fechaActual, hora: horaActual,
-        usuarioId: user?.id, usuarioNombre: user?.nombre, accion,
-        tareaId: task?.id, tareaNombre: task?.nombre, latitud: 0, longitud: 0, observaciones: mensajeError
-      });
-      setRegistrosBrutos(prev => prev.map(r => 
-        (r[8] === user?.id && r[9] === task?.id && r[0] === fechaActual && r[1] === horaActual)
-          ? [fechaActual, horaActual, user?.nombre || '', accion, task?.nombre || '', '0', '0', mensajeError, user?.id || '', task?.id || '']
-          : r
-      ));
-      setMensaje({ texto: `¡${accion} registrada! (${mensajeError})`, tipo: 'info' });
-      setTimeout(() => setMensaje(null), 3500);
-      setFichajeExitosoModal({ accion, hora: horaActual, cp: mensajeError });
-    }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+    };
+
+    // Intentar geolocalización rápida con caché de hasta 1 minuto
+    if (typeof navigator !== 'undefined' && navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        async (pos) => {
+          try {
+            const cp = await obtenerCodigoPostal(pos.coords.latitude, pos.coords.longitude);
+            await finalizarEnvio(pos.coords.latitude, pos.coords.longitude, cp);
+          } catch {
+            await finalizarEnvio(pos.coords.latitude, pos.coords.longitude, 'S/N');
+          }
+        },
+        async () => {
+          await finalizarEnvio(0, 0, 'Sin GPS');
+        },
+        { enableHighAccuracy: true, timeout: 5000, maximumAge: 60000 }
+      );
+    } else {
+      await finalizarEnvio(0, 0, 'Sin GPS');
+    }
   };
 
   // Borrar marcaje individual
   const handleBorrarIndividual = async (fecha: string, hora: string, accion: 'Entrada' | 'Salida', uId: string, tId: string, uNombre: string) => {
     if (!window.confirm(`¿Seguro que quieres borrar el marcaje de ${accion.toUpperCase()} de las ${hora} para ${uNombre}?`)) return;
     
-    // Eliminar localmente solo el registro exacto
-    setRegistrosBrutos(prev => prev.filter(r => !(
-      String(r[8]) === String(uId) && 
-      String(r[0]) === String(fecha) && 
-      String(r[1]) === String(hora) &&
-      String(r[3]) === String(accion)
-    )));
+    setRegistrosBrutos(prev => {
+      const updated = prev.filter(r => !(
+        String(r[8]) === String(uId) && 
+        String(r[0]) === String(fecha) && 
+        String(r[1]) === String(hora) &&
+        String(r[3]) === String(accion)
+      ));
+      localStorage.setItem('cp_cache_registros', JSON.stringify(updated));
+      return updated;
+    });
     
     setMensaje({ texto: 'Marcaje eliminado de la vista local.', tipo: 'exito' });
     setTimeout(() => setMensaje(null), 2500);
 
     try { 
-      // Enviar al backend para borrar ese marcaje por su hora
       await eliminarRegistro(fecha, hora, "", uId, tId); 
       refrescarDatos();
     } catch (e) { 
@@ -358,18 +430,20 @@ function App() {
   const handleBorrarTramoCompleto = async (fecha: string, hEntrada: string, hSalida: string, uId: string, tId: string, uNombre: string) => {
     if (!window.confirm(`¿Seguro que quieres borrar el tramo COMPLETO de ${uNombre} (${hEntrada} a ${hSalida})? Se eliminarán ambas marcas en la base de datos.`)) return;
 
-    // Eliminar localmente ambos
-    setRegistrosBrutos(prev => prev.filter(r => !(
-      String(r[8]) === String(uId) && 
-      String(r[0]) === String(fecha) && 
-      (String(r[1]) === String(hEntrada) || String(r[1]) === String(hSalida))
-    )));
+    setRegistrosBrutos(prev => {
+      const updated = prev.filter(r => !(
+        String(r[8]) === String(uId) && 
+        String(r[0]) === String(fecha) && 
+        (String(r[1]) === String(hEntrada) || String(r[1]) === String(hSalida))
+      ));
+      localStorage.setItem('cp_cache_registros', JSON.stringify(updated));
+      return updated;
+    });
 
     setMensaje({ texto: 'Tramo de jornada eliminado localmente.', tipo: 'exito' });
     setTimeout(() => setMensaje(null), 2500);
 
     try { 
-      // Pasar hEntrada y hSalida al backend para eliminar ambas filas físicas de la hoja
       await eliminarRegistro(fecha, hEntrada, hSalida, uId, tId);
       refrescarDatos();
     } catch (e) { 
@@ -382,15 +456,19 @@ function App() {
     const t = tareas.find((task: Tarea) => task.id === editando.nuevaTareaId);
     const u = usuarios.find((user: Usuario) => user.id === editando.usuarioId);
 
-    setRegistrosBrutos(prev => prev.map(r => {
-      if (String(r[8]) === String(editando.usuarioId) && 
-          String(r[0]) === String(editando.fecha) && 
-          String(r[1]) === String(editando.horaOriginal) &&
-          String(r[3]) === String(editando.accionOriginal)) {
-        return [editando.fecha, editando.nuevaHora, u?.nombre || r[2], editando.nuevaAccion, t?.nombre || r[4], r[5], r[6], r[7], editando.usuarioId, editando.nuevaTareaId];
-      }
-      return r;
-    }));
+    setRegistrosBrutos(prev => {
+      const updated = prev.map(r => {
+        if (String(r[8]) === String(editando.usuarioId) && 
+            String(r[0]) === String(editando.fecha) && 
+            String(r[1]) === String(editando.horaOriginal) &&
+            String(r[3]) === String(editando.accionOriginal)) {
+          return [editando.fecha, editando.nuevaHora, u?.nombre || r[2], editando.nuevaAccion, t?.nombre || r[4], r[5], r[6], r[7], editando.usuarioId, editando.nuevaTareaId];
+        }
+        return r;
+      });
+      localStorage.setItem('cp_cache_registros', JSON.stringify(updated));
+      return updated;
+    });
 
     setMensaje({ texto: '¡Fichaje actualizado con éxito!', tipo: 'exito' });
     const copiaEditando = { ...editando };
@@ -416,9 +494,6 @@ function App() {
     setFormManualDate(convertToISODate(huerfano.fechaOriginal));
     setFormManualAction(accionFaltante);
     
-    // Intentar deducir una hora lógica:
-    // Si falta la entrada, sugerir 1 hora antes de la salida, o en blanco.
-    // Si falta la salida, sugerir 8 horas después de la entrada.
     if (accionFaltante === 'Salida' && huerfano.hora) {
       const [h, m] = huerfano.hora.split(':').map(Number);
       const salidaH = (h + 8) % 24;
@@ -454,61 +529,19 @@ function App() {
     const fechaES = convertToESDate(formManualDate);
     
     setModalManualOpen(false);
-    setMensaje({ texto: 'Determinando geolocalización y guardando...', tipo: 'info' });
+    setMensaje({ texto: 'Guardando fichaje manual...', tipo: 'info' });
     
-    // Capturar la geolocalización en tiempo real al guardar el registro manual/resolución
-    navigator.geolocation.getCurrentPosition(async (pos) => {
-      try {
-        const cp = await obtenerCodigoPostal(pos.coords.latitude, pos.coords.longitude);
-        await enviarFichaje({
-          tipoAccion: "fichaje",
-          fecha: fechaES,
-          hora: formManualTime,
-          usuarioId: formManualUser,
-          usuarioNombre: user?.nombre,
-          accion: formManualAction,
-          tareaId: formManualTask,
-          tareaNombre: task?.nombre,
-          latitud: pos.coords.latitude,
-          longitud: pos.coords.longitude,
-          observaciones: cp
-        });
-        
-        // Actualizar listado localmente con el CP
-        const nuevoReg = [
-          fechaES, formManualTime, user?.nombre || '', formManualAction, task?.nombre || '',
-          String(pos.coords.latitude), String(pos.coords.longitude), cp, formManualUser, formManualTask
-        ];
-        setRegistrosBrutos(prev => [...prev, nuevoReg]);
-        
-        setMensaje({ texto: `¡Fichaje guardado con éxito (CP: ${cp})!`, tipo: 'exito' });
-        setTimeout(() => setMensaje(null), 3000);
-        refrescarDatos();
-      } catch (e) {
-        console.error(e);
-        await guardarManualFallback(fechaES, user, task, "Manual sin GPS");
-      }
-    }, async (err) => {
-      let mensajeError = "Manual sin GPS";
-      if (err.code === 1) {
-        mensajeError = "Manual sin GPS (Permiso denegado)";
-        alert("Atención: Has denegado los permisos de geolocalización. Actívalos en los ajustes de tu navegador para que la aplicación registre tu ubicación.");
-      } else if (err.code === 2) {
-        mensajeError = "Manual sin GPS (No disponible)";
-      } else if (err.code === 3) {
-        mensajeError = "Manual sin GPS (Timeout)";
-      }
-      await guardarManualFallback(fechaES, user, task, mensajeError);
-    }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
-  };
-
-  const guardarManualFallback = async (fechaES: string, user: any, task: any, obs: string) => {
+    // Inserción optimista
     const nuevoReg = [
       fechaES, formManualTime, user?.nombre || '', formManualAction, task?.nombre || '',
-      '0', '0', obs, formManualUser, formManualTask
+      '0', '0', 'Manual', formManualUser, formManualTask
     ];
-    setRegistrosBrutos(prev => [...prev, nuevoReg]);
-    
+    setRegistrosBrutos(prev => {
+      const updated = [...prev, nuevoReg];
+      localStorage.setItem('cp_cache_registros', JSON.stringify(updated));
+      return updated;
+    });
+
     try {
       await enviarFichaje({
         tipoAccion: "fichaje",
@@ -521,9 +554,9 @@ function App() {
         tareaNombre: task?.nombre,
         latitud: 0,
         longitud: 0,
-        observaciones: obs
+        observaciones: 'Manual'
       });
-      setMensaje({ texto: 'Fichaje guardado con éxito (sin GPS).', tipo: 'exito' });
+      setMensaje({ texto: '¡Fichaje manual guardado con éxito!', tipo: 'exito' });
       setTimeout(() => setMensaje(null), 3000);
       refrescarDatos();
     } catch (e) {
@@ -538,9 +571,17 @@ function App() {
     const { tipo, id, nombre } = editandoConfig;
 
     if (tipo === 'config_usuario') {
-      setUsuarios(prev => prev.map(u => u.id === id ? { ...u, nombre } : u));
+      setUsuarios(prev => {
+        const up = prev.map(u => u.id === id ? { ...u, nombre } : u);
+        localStorage.setItem('cp_cache_usuarios', JSON.stringify(up));
+        return up;
+      });
     } else {
-      setTareas(prev => prev.map(t => t.id === id ? { ...t, nombre } : t));
+      setTareas(prev => {
+        const up = prev.map(t => t.id === id ? { ...t, nombre } : t);
+        localStorage.setItem('cp_cache_tareas', JSON.stringify(up));
+        return up;
+      });
     }
     setEditandoConfig(null);
     setTimeout(() => setMensaje(null), 2000);
@@ -558,9 +599,17 @@ function App() {
   const handleToggleEstado = async (tipo: string, id: string) => {
     setMensaje({ texto: 'Actualizando estado...', tipo: 'info' });
     if (tipo === 'config_usuario') {
-      setUsuarios(prev => prev.map(u => u.id === id ? { ...u, activo: !u.activo } : u));
+      setUsuarios(prev => {
+        const up = prev.map(u => u.id === id ? { ...u, activo: !u.activo } : u);
+        localStorage.setItem('cp_cache_usuarios', JSON.stringify(up));
+        return up;
+      });
     } else {
-      setTareas(prev => prev.map(t => t.id === id ? { ...t, activo: !t.activo } : t));
+      setTareas(prev => {
+        const up = prev.map(t => t.id === id ? { ...t, activo: !t.activo } : t);
+        localStorage.setItem('cp_cache_tareas', JSON.stringify(up));
+        return up;
+      });
     }
 
     try {
@@ -572,13 +621,28 @@ function App() {
     }
   };
 
+  // --- 4. GESTIÓN DEL VOLCADO A HISTÓRICO CON MEMORIA ---
   const handleArchivar = async () => {
     if (!fechaCorteArchivo) return alert("Selecciona una fecha de corte.");
-    if (!window.confirm(`¿Confirmas archivar todos los registros desde el ${formatearFechaES(fechaCorteArchivo)} hacia atrás?`)) return;
-    setMensaje({ texto: 'Archivando base de datos...', tipo: 'info' });
+    if (!window.confirm(`¿Confirmas archivar todos los registros anteriores o iguales al ${formatearFechaES(fechaCorteArchivo)} hacia el histórico?`)) return;
+    
+    setMensaje({ texto: 'Archivando base de datos a histórico...', tipo: 'info' });
     try {
       await archivarDatosAntiguos(fechaCorteArchivo);
-      setMensaje({ texto: '¡Archivado completado con éxito!', tipo: 'exito' });
+      
+      const ahoraStr = new Date().toLocaleString('es-ES', { 
+        day: '2-digit', month: '2-digit', year: 'numeric', 
+        hour: '2-digit', minute: '2-digit' 
+      });
+      const nuevoInfoVolcado = {
+        fechaCorte: fechaCorteArchivo,
+        fechaEjecucion: ahoraStr
+      };
+      
+      setUltimoVolcado(nuevoInfoVolcado);
+      localStorage.setItem('cp_ultimo_volcado', JSON.stringify(nuevoInfoVolcado));
+
+      setMensaje({ texto: `¡Archivado completado! Registros hasta ${formatearFechaES(fechaCorteArchivo)} movidos a histórico.`, tipo: 'exito' });
       setFechaCorteArchivo('');
       refrescarDatos();
     } catch (e) { 
@@ -595,6 +659,8 @@ function App() {
       const configActualizada = await obtenerConfiguracion();
       setUsuarios(configActualizada.usuarios || []);
       setTareas(configActualizada.tareas || []);
+      localStorage.setItem('cp_cache_usuarios', JSON.stringify(configActualizada.usuarios || []));
+      localStorage.setItem('cp_cache_tareas', JSON.stringify(configActualizada.tareas || []));
       setMensaje({ texto: '¡Datos guardados con éxito!', tipo: 'exito' });
     } catch (e) { 
       setMensaje(null); 
@@ -602,10 +668,10 @@ function App() {
     setTimeout(() => setMensaje(null), 2000);
   };
 
-  // Limpiar selección de usuario (Cerrar Sesión) para uso multiusuario fácil
-  const handleCerrarSesion = () => {
+  // Limpiar selección de usuario para cambio rápido
+  const handleCambiarColaborador = () => {
     setUsuarioId('');
-    setMensaje({ texto: 'Sesión cerrada.', tipo: 'info' });
+    setMensaje({ texto: 'Colaborador deseleccionado.', tipo: 'info' });
     setTimeout(() => setMensaje(null), 1500);
   };
 
@@ -613,7 +679,7 @@ function App() {
     const diasMap: Record<string, any> = {};
     const analitica: Record<string, any> = {};
 
-    // 1. Mapear y ordenar los registros cronológicamente por fecha y hora (independiente de la posición física de la fila en la hoja de cálculo)
+    // 1. Mapear y ordenar los registros cronológicamente
     const registrosOrdenados = registrosBrutos
       .slice(1)
       .filter((r: any[]) => r[0] && r[0] !== "Fecha")
@@ -673,49 +739,19 @@ function App() {
     };
   }, [registrosBrutos, filtroDesde, filtroHasta]);
 
-  if (cargandoConfig) {
+  if (cargandoInicial) {
     return (
       <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center font-bold text-blue-800 animate-pulse text-sm text-center tracking-widest uppercase p-4">
         <Clock className="w-12 h-12 text-blue-600 animate-spin mb-4" />
-        <span>Conectando con Google Sheets...</span>
+        <span>Conectando por primera vez...</span>
       </div>
     );
   }
 
   const stats = dataStore.analitica[usuarioAnalisisId] || { nombre: '', totalMin: 0, diasUnicos: new Set(), tareas: {} };
 
-  if (appExited) {
-    return (
-      <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center p-6 text-white font-sans text-center">
-        <div className="max-w-md w-full bg-slate-800 rounded-3xl p-8 border border-slate-700 shadow-2xl space-y-6">
-          <div className="w-20 h-20 bg-rose-500/10 border-2 border-rose-500 rounded-full flex items-center justify-center mx-auto text-rose-500 animate-pulse">
-            <LogOut className="w-10 h-10" />
-          </div>
-          <div className="space-y-2">
-            <h1 className="text-2xl font-black uppercase tracking-tight text-slate-100">Aplicación Cerrada</h1>
-            <p className="text-slate-400 text-sm font-semibold">
-              Tu fichaje ha sido guardado de forma segura en la nube.
-            </p>
-          </div>
-          <div className="p-4 bg-slate-850 rounded-2xl border border-slate-750 text-xs text-slate-400 leading-relaxed font-bold">
-            Ya puedes cerrar esta pestaña del navegador de forma segura, o pulsar abajo para volver.
-          </div>
-          <button 
-            onClick={() => {
-              setAppExited(false);
-              setUsuarioId(''); // limpiar usuario por seguridad al volver a abrir
-            }} 
-            className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-bold text-sm uppercase shadow-lg transition-all"
-          >
-            Volver a Iniciar
-          </button>
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div className="min-h-screen bg-slate-100 flex flex-col items-center justify-start p-3 md:p-6 text-slate-800 font-sans">
+    <div className="min-h-screen bg-slate-100 flex flex-col items-center justify-start p-2 sm:p-4 md:p-6 text-slate-800 font-sans">
       <style>{`
         @media print {
           @page { size: A4 portrait; margin: 15mm; }
@@ -726,6 +762,48 @@ function App() {
           .report-title { font-size: 20pt; font-weight: 900; border-bottom: 2px solid black; padding-bottom: 10px; margin-bottom: 20px; text-transform: uppercase; }
         }
       `}</style>
+
+      {/* NOTIFICACIÓN FLOTANTE (TOAST) DE FICHAJE INSTANTÁNEO */}
+      {toastFichaje && toastFichaje.visible && (
+        <div className="fixed top-4 z-50 w-full max-w-sm px-4 animate-in fade-in slide-in-from-top-4 duration-200">
+          <div className="bg-slate-900/95 backdrop-blur-md text-white p-4 rounded-2xl shadow-2xl border border-slate-700/60 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 ${
+                toastFichaje.accion === 'Entrada' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'
+              }`}>
+                <CheckCircle2 className="w-6 h-6" />
+              </div>
+              <div className="text-left">
+                <div className="flex items-center gap-2">
+                  <span className="font-black text-sm uppercase tracking-tight">
+                    {toastFichaje.accion} registrada
+                  </span>
+                  <span className="text-xs font-bold text-slate-300">({toastFichaje.hora})</span>
+                </div>
+                <div className="text-[11px] text-slate-400 font-semibold flex items-center gap-1.5 mt-0.5">
+                  <span>{toastFichaje.usuario}</span>
+                  <span>•</span>
+                  {toastFichaje.estado === 'guardando' ? (
+                    <span className="text-blue-400 flex items-center gap-1">
+                      <RefreshCw className="w-3 h-3 animate-spin inline" /> Guardando en nube...
+                    </span>
+                  ) : (
+                    <span className="text-emerald-400 flex items-center gap-1">
+                      <Zap className="w-3 h-3 inline" /> {toastFichaje.cp || 'Guardado'}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+            <button 
+              onClick={() => setToastFichaje(null)} 
+              className="text-slate-400 hover:text-white text-xs font-bold px-2 py-1"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* MODAL EDICIÓN FICHAJE */}
       {editando && (
@@ -862,50 +940,6 @@ function App() {
         </div>
       )}
 
-      {/* MODAL FICHAJE EXITOSO / OPCIÓN DE SALIR */}
-      {fichajeExitosoModal && (
-        <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 print:hidden">
-          <div className="bg-white w-full max-w-sm rounded-[2rem] p-6 shadow-2xl space-y-6 border border-slate-100 text-center">
-            <div className="w-16 h-16 bg-emerald-500/10 border-2 border-emerald-500 rounded-full flex items-center justify-center mx-auto text-emerald-500">
-              <Clock className="w-8 h-8 animate-pulse" />
-            </div>
-            <div className="space-y-2">
-              <h2 className="text-xl font-black uppercase tracking-tight text-slate-900">¡Fichaje Confirmado!</h2>
-              <p className="text-sm font-bold text-slate-650">
-                Se ha registrado tu <span className="font-extrabold text-blue-700">{fichajeExitosoModal.accion.toUpperCase()}</span> a las <span className="font-extrabold text-blue-700">{fichajeExitosoModal.hora}</span>.
-              </p>
-              <p className="text-[10px] text-slate-400">Ubicación registrada: {fichajeExitosoModal.cp}</p>
-            </div>
-            <div className="flex flex-col gap-2 pt-2">
-              <button 
-                onClick={() => {
-                  setTabActiva('informes');
-                  setFichajeExitosoModal(null);
-                }} 
-                className="w-full py-3 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-xl font-black text-xs uppercase shadow-sm transition-all"
-              >
-                🔍 Ver en el Diario
-              </button>
-              <button 
-                onClick={() => {
-                  setFichajeExitosoModal(null);
-                  setAppExited(true);
-                }} 
-                className="w-full py-3 bg-rose-600 hover:bg-rose-700 text-white rounded-xl font-black text-xs uppercase shadow-md transition-all"
-              >
-                🚪 Salir de la aplicación
-              </button>
-              <button 
-                onClick={() => setFichajeExitosoModal(null)} 
-                className="w-full py-2 font-bold text-[10px] text-slate-400 uppercase tracking-widest hover:text-slate-600 mt-1"
-              >
-                Volver a Fichar
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* REPORTE DE IMPRESIÓN */}
       <div className="hidden print:block w-full">
         <div className="report-title">Reporte de Control de Presencia</div>
@@ -927,29 +961,40 @@ function App() {
         </table>
       </div>
 
-      {/* APLICACIÓN VISUAL */}
-      <div className="w-full max-w-md bg-white rounded-[2.5rem] shadow-xl p-4 flex flex-col min-h-[92vh] border border-slate-100 overflow-hidden relative print:hidden">
+      {/* APLICACIÓN VISUAL PRINCIPAL */}
+      <div className="w-full max-w-md bg-white rounded-[2.5rem] shadow-xl p-4 flex flex-col min-h-[92vh] border border-slate-150 overflow-hidden relative print:hidden">
         
-        {/* CABECERA DE LA APP CON BOTÓN GLOBAL DE SALIR */}
-        <div className="flex justify-between items-center border-b pb-2 mb-3">
-          <div className="flex items-center gap-1.5">
-            <span className="text-sm font-black uppercase tracking-widest text-slate-400">Control CP</span>
+        {/* CABECERA ÁGIL SIN MENÚS REDUNDANTES */}
+        <div className="flex justify-between items-center border-b border-slate-100 pb-2 mb-3">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-black uppercase tracking-widest text-slate-700">Control CP</span>
+            {sincronizandoFondo && (
+              <span className="inline-flex items-center gap-1 text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full" title="Sincronizando con Google Sheets">
+                <RefreshCw className="w-2.5 h-2.5 animate-spin" />
+                <span>Sync</span>
+              </span>
+            )}
           </div>
-          <button 
-            onClick={() => {
-              if (window.confirm("¿Deseas salir de la aplicación?")) {
-                setAppExited(true);
-              }
-            }} 
-            className="text-xs font-black text-rose-500 hover:text-rose-700 transition-colors flex items-center gap-1.5 bg-rose-50 px-3.5 py-2 rounded-lg border border-rose-100/50 shadow-sm animate-pulse"
-          >
-            <LogOut className="w-3.5 h-3.5" />
-            <span>SALIR</span>
-          </button>
+
+          {/* Botón de colaborador rápido */}
+          {usuarioId ? (
+            <button 
+              onClick={handleCambiarColaborador} 
+              className="text-xs font-bold text-slate-500 hover:text-rose-600 transition-colors flex items-center gap-1 bg-slate-100 hover:bg-rose-50 px-2.5 py-1.5 rounded-xl"
+              title="Cambiar de colaborador"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span>Cambiar usuario</span>
+            </button>
+          ) : (
+            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+              Listo para fichar
+            </div>
+          )}
         </div>
         
         {/* Barra superior de pestañas táctiles */}
-        <div className="flex bg-slate-100 p-1.5 rounded-2xl mb-4 flex-shrink-0">
+        <div className="flex bg-slate-100 p-1.5 rounded-2xl mb-3 flex-shrink-0">
           {[
             { id: 'fichaje', label: 'Fichar', icon: Clock },
             { id: 'informes', label: 'Diario', icon: Calendar },
@@ -961,7 +1006,7 @@ function App() {
               <button 
                 key={tab.id} 
                 onClick={() => setTabActiva(tab.id)} 
-                className={`flex-1 py-3 rounded-xl font-black text-xs uppercase flex items-center justify-center transition-all ${
+                className={`flex-1 py-2.5 rounded-xl font-black text-xs uppercase flex items-center justify-center transition-all ${
                   tabActiva === tab.id ? 'bg-white text-blue-700 shadow-sm border border-slate-200/50' : 'text-slate-500 hover:text-slate-800'
                 }`}
               >
@@ -972,9 +1017,9 @@ function App() {
           })}
         </div>
 
-        {/* Mensaje de confirmación global */}
+        {/* Mensaje de notificación temporal si procede */}
         {mensaje && (
-          <div className={`p-3.5 rounded-2xl text-center font-black text-sm mb-3 shadow-sm border animate-pulse ${
+          <div className={`p-3 rounded-2xl text-center font-black text-xs mb-3 shadow-sm border animate-in fade-in duration-150 ${
             mensaje.tipo === 'exito' ? 'bg-emerald-500 text-white border-emerald-600' :
             mensaje.tipo === 'error' ? 'bg-rose-500 text-white border-rose-600' :
             'bg-blue-600 text-white border-blue-700'
@@ -985,38 +1030,33 @@ function App() {
 
         <div className="flex-1 flex flex-col overflow-hidden">
           
-          {/* TAB FICHAJE */}
+          {/* TAB 1: FICHAJE ULTRA-RÁPIDO */}
           {tabActiva === 'fichaje' && (
             <div className="flex-1 flex flex-col justify-between">
               
               {/* Encabezado con reloj en tiempo real */}
-              <div className="text-center pt-2 pb-4">
-                <h1 className="text-base font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Jornada Laboral</h1>
-                <div className="text-5xl font-black text-blue-900 tracking-tight leading-none tabular-nums my-2.5">
+              <div className="text-center pt-1 pb-3">
+                <h1 className="text-xs font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Jornada Laboral</h1>
+                <div className="text-5xl font-black text-blue-900 tracking-tight leading-none tabular-nums my-2">
                   {horaActualLocal || '--:--:--'}
                 </div>
-                <p className="text-sm font-semibold text-slate-500 capitalize">{fechaActualLocal}</p>
+                <p className="text-xs font-semibold text-slate-500 capitalize">{fechaActualLocal}</p>
               </div>
 
               {/* Selector de Usuario y Estado Actual */}
-              <div className="bg-slate-50/70 p-4 rounded-3xl border border-slate-150 shadow-sm space-y-4">
+              <div className="bg-slate-50/80 p-3.5 rounded-3xl border border-slate-200/70 shadow-sm space-y-3">
                 <div>
                   <div className="flex justify-between items-center mb-1">
-                    <label className="text-xs font-black text-slate-400 uppercase tracking-wider block">Colaborador</label>
+                    <label className="text-[11px] font-black text-slate-400 uppercase tracking-wider block">Colaborador</label>
                     {usuarioId && (
-                      <button 
-                        onClick={handleCerrarSesion} 
-                        className="text-xs font-black text-rose-500 flex items-center gap-0.5 hover:text-rose-700 transition-colors"
-                        title="Cerrar sesión / Limpiar usuario"
-                      >
-                        <LogOut className="w-3.5 h-3.5" />
-                        <span>Cambiar</span>
-                      </button>
+                      <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-100">
+                        Recordado ✓
+                      </span>
                     )}
                   </div>
                   
                   <select 
-                    className="w-full p-3.5 bg-white border border-slate-200 rounded-xl font-bold text-base outline-none focus:border-blue-500 transition-all cursor-pointer"
+                    className="w-full p-3 bg-white border border-slate-200 rounded-xl font-bold text-base outline-none focus:border-blue-500 transition-all cursor-pointer shadow-sm"
                     value={usuarioId} 
                     onChange={(e) => setUsuarioId(e.target.value)}
                   >
@@ -1030,25 +1070,25 @@ function App() {
                 {/* Mostrar Estado Actual del Colaborador en Tiempo Real */}
                 {usuarioId && estadoUsuarioHoy && (
                   <div className="pt-2 border-t border-slate-200/60 flex items-center justify-between">
-                    <span className="text-xs font-black text-slate-400 uppercase tracking-wider">Estado de hoy:</span>
-                    <div className="flex items-center gap-2 bg-white px-3 py-1 rounded-full border border-slate-100 shadow-sm">
+                    <span className="text-[11px] font-black text-slate-400 uppercase tracking-wider">Estado hoy:</span>
+                    <div className="flex items-center gap-1.5 bg-white px-2.5 py-1 rounded-full border border-slate-200/80 shadow-sm">
                       {estadoUsuarioHoy.estado === 'DENTRO' ? (
                         <>
                           <span className="relative flex h-2.5 w-2.5">
                             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                             <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
                           </span>
-                          <span className="text-sm font-black text-emerald-600">DENTRO ({estadoUsuarioHoy.hora})</span>
+                          <span className="text-xs font-black text-emerald-600">DENTRO ({estadoUsuarioHoy.hora})</span>
                         </>
                       ) : estadoUsuarioHoy.estado === 'FUERA' ? (
                         <>
                           <span className="h-2.5 w-2.5 rounded-full bg-rose-500"></span>
-                          <span className="text-sm font-black text-rose-600">FUERA (Salida {estadoUsuarioHoy.hora})</span>
+                          <span className="text-xs font-black text-rose-600">FUERA (Salida {estadoUsuarioHoy.hora})</span>
                         </>
                       ) : (
                         <>
                           <span className="h-2.5 w-2.5 rounded-full bg-slate-300"></span>
-                          <span className="text-sm font-black text-slate-500">SIN REGISTROS</span>
+                          <span className="text-xs font-black text-slate-500">SIN REGISTROS</span>
                         </>
                       )}
                     </div>
@@ -1057,10 +1097,10 @@ function App() {
               </div>
 
               {/* Selector de Centro de Trabajo */}
-              <div className="bg-slate-50/70 p-4 rounded-3xl border border-slate-150 shadow-sm mt-3">
-                <label className="text-xs font-black text-slate-400 uppercase tracking-wider block mb-1">Centro de Trabajo</label>
+              <div className="bg-slate-50/80 p-3.5 rounded-3xl border border-slate-200/70 shadow-sm mt-2">
+                <label className="text-[11px] font-black text-slate-400 uppercase tracking-wider block mb-1">Centro de Trabajo</label>
                 <select 
-                  className="w-full p-3.5 bg-white border border-slate-200 rounded-xl font-bold text-base outline-none focus:border-blue-500 transition-all cursor-pointer"
+                  className="w-full p-3 bg-white border border-slate-200 rounded-xl font-bold text-base outline-none focus:border-blue-500 transition-all cursor-pointer shadow-sm"
                   value={tareaId} 
                   onChange={(e) => setTareaId(e.target.value)}
                   disabled={!usuarioId}
@@ -1071,63 +1111,63 @@ function App() {
                 </select>
               </div>
 
-              {/* Espaciador decorativo */}
-              <div className="flex-1 flex items-center justify-center my-6">
-                <div className="relative p-6 bg-blue-50 rounded-full border-4 border-white shadow-inner animate-pulse">
-                  <Clock className="w-16 h-16 text-blue-600" />
+              {/* Espaciador / Icono animado */}
+              <div className="flex-1 flex items-center justify-center my-4">
+                <div className="p-5 bg-gradient-to-b from-blue-50 to-indigo-50 rounded-full border-4 border-white shadow-inner">
+                  <Clock className="w-12 h-12 text-blue-600" />
                 </div>
               </div>
 
-              {/* Botones Grandes de Entrada / Salida */}
-              <div className="grid grid-cols-2 gap-4 pb-2">
+              {/* Botones Grandes de Entrada / Salida con Respuesta Inmediata */}
+              <div className="grid grid-cols-2 gap-3.5 pb-2">
                 <button 
                   onClick={() => handleFichaje('Entrada')} 
                   disabled={!usuarioId}
-                  className="bg-emerald-500 active:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed text-white py-5 rounded-3xl font-black text-xl shadow-lg hover:shadow-emerald-500/20 uppercase tracking-widest border-b-4 border-emerald-600 transition-all transform active:scale-95 flex flex-col items-center justify-center"
+                  className="bg-emerald-500 hover:bg-emerald-600 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed text-white py-4 sm:py-5 rounded-3xl font-black text-lg sm:text-xl shadow-lg hover:shadow-emerald-500/20 uppercase tracking-widest border-b-4 border-emerald-600 transition-all flex flex-col items-center justify-center cursor-pointer"
                 >
                   <span>Entrada</span>
-                  <span className="text-xs font-semibold tracking-normal opacity-85 lowercase mt-0.5">clock in</span>
+                  <span className="text-[11px] font-semibold tracking-normal opacity-90 lowercase mt-0.5">clock in</span>
                 </button>
                 
                 <button 
                   onClick={() => handleFichaje('Salida')} 
                   disabled={!usuarioId}
-                  className="bg-rose-500 active:bg-rose-600 disabled:opacity-50 disabled:cursor-not-allowed text-white py-5 rounded-3xl font-black text-xl shadow-lg hover:shadow-rose-500/20 uppercase tracking-widest border-b-4 border-rose-600 transition-all transform active:scale-95 flex flex-col items-center justify-center"
+                  className="bg-rose-500 hover:bg-rose-600 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed text-white py-4 sm:py-5 rounded-3xl font-black text-lg sm:text-xl shadow-lg hover:shadow-rose-500/20 uppercase tracking-widest border-b-4 border-rose-600 transition-all flex flex-col items-center justify-center cursor-pointer"
                 >
                   <span>Salida</span>
-                  <span className="text-xs font-semibold tracking-normal opacity-85 lowercase mt-0.5">clock out</span>
+                  <span className="text-[11px] font-semibold tracking-normal opacity-90 lowercase mt-0.5">clock out</span>
                 </button>
               </div>
 
-              {/* Aviso si no hay usuario seleccionado */}
+              {/* Aviso si no hay colaborador seleccionado */}
               {!usuarioId && (
-                <div className="text-center py-2 px-4 bg-amber-50 rounded-xl border border-amber-200/50 text-[10px] font-bold text-amber-700 flex items-center justify-center gap-1">
-                  <AlertTriangle className="w-3.5 h-3.5" />
-                  <span>Por seguridad, debes seleccionar tu nombre antes de fichar.</span>
+                <div className="text-center py-2 px-3 bg-amber-50 rounded-xl border border-amber-200/60 text-[11px] font-bold text-amber-700 flex items-center justify-center gap-1.5">
+                  <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+                  <span>Por seguridad, selecciona tu nombre antes de fichar.</span>
                 </div>
               )}
             </div>
           )}
 
-          {/* TAB DIARIO */}
+          {/* TAB 2: DIARIO */}
           {tabActiva === 'informes' && (
             <div className="flex-1 flex flex-col overflow-hidden">
-              <div className="flex justify-between items-center mb-3">
-                <h1 className="text-lg font-black uppercase tracking-tight flex items-center gap-1 text-slate-800">
-                  <CalendarDays className="w-5 h-5 text-blue-600" />
+              <div className="flex justify-between items-center mb-2.5">
+                <h1 className="text-base font-black uppercase tracking-tight flex items-center gap-1 text-slate-800">
+                  <CalendarDays className="w-4 h-4 text-blue-600" />
                   <span>Diario de Fichajes</span>
                 </h1>
                 
-                <div className="flex gap-2">
+                <div className="flex gap-1.5">
                   <button 
                     onClick={abrirFichajeManualNuevo}
-                    className="bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-2.5 rounded-lg text-xs font-black uppercase flex items-center gap-1 transition-colors shadow-sm"
+                    className="bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1.5 rounded-lg text-xs font-black uppercase flex items-center gap-1 transition-colors shadow-sm"
                   >
                     <Plus className="w-3.5 h-3.5" /> Fichaje
                   </button>
                   <button 
                     onClick={handlePrint} 
-                    className="bg-slate-900 hover:bg-slate-800 text-white px-3.5 py-2.5 rounded-lg text-xs font-black uppercase flex items-center gap-1 transition-colors shadow-sm"
+                    className="bg-slate-900 hover:bg-slate-800 text-white px-2.5 py-1.5 rounded-lg text-xs font-black uppercase flex items-center gap-1 transition-colors shadow-sm"
                   >
                     <Printer className="w-3.5 h-3.5" /> Reporte
                   </button>
@@ -1135,11 +1175,11 @@ function App() {
               </div>
 
               {/* Filtros */}
-              <div className="bg-slate-50 border border-slate-200 p-3 rounded-2xl space-y-2 mb-3">
+              <div className="bg-slate-50 border border-slate-200 p-2.5 rounded-2xl space-y-2 mb-2.5">
                 <div className="flex items-center gap-2 bg-white px-2.5 py-1.5 rounded-xl border border-slate-200">
-                  <User className="w-4 h-4 text-slate-400" />
+                  <User className="w-3.5 h-3.5 text-slate-400" />
                   <select 
-                    className="flex-1 bg-transparent text-sm font-black outline-none border-none cursor-pointer py-1.5"
+                    className="flex-1 bg-transparent text-xs font-black outline-none border-none cursor-pointer py-1"
                     value={usuarioDiarioId} 
                     onChange={(e) => setUsuarioDiarioId(e.target.value)}
                   >
@@ -1151,9 +1191,9 @@ function App() {
                 </div>
 
                 <div className="flex items-center gap-2 bg-white px-2.5 py-1.5 rounded-xl border border-slate-200">
-                  <FolderOpen className="w-4 h-4 text-slate-400" />
+                  <FolderOpen className="w-3.5 h-3.5 text-slate-400" />
                   <select 
-                    className="flex-1 bg-transparent text-sm font-black outline-none border-none cursor-pointer py-1.5"
+                    className="flex-1 bg-transparent text-xs font-black outline-none border-none cursor-pointer py-1"
                     value={tareaDiarioId} 
                     onChange={(e) => setTareaDiarioId(e.target.value)}
                   >
@@ -1165,31 +1205,39 @@ function App() {
                 </div>
 
                 <div className="grid grid-cols-2 gap-2">
-                  <input type="date" value={filtroDesde} onChange={(e) => setFiltroDesde(e.target.value)} className="p-2.5 bg-white border border-slate-200 rounded-xl text-sm font-bold outline-none" />
-                  <input type="date" value={filtroHasta} onChange={(e) => setFiltroHasta(e.target.value)} className="p-2.5 bg-white border border-slate-200 rounded-xl text-sm font-bold outline-none" />
+                  <input type="date" value={filtroDesde} onChange={(e) => setFiltroDesde(e.target.value)} className="p-2 bg-white border border-slate-200 rounded-xl text-xs font-bold outline-none" />
+                  <input type="date" value={filtroHasta} onChange={(e) => setFiltroHasta(e.target.value)} className="p-2 bg-white border border-slate-200 rounded-xl text-xs font-bold outline-none" />
                 </div>
 
                 <div className="flex items-center justify-between pt-1">
                   <div className="flex items-center gap-2">
                     <input type="checkbox" id="check-h" checked={incluirHistorico} onChange={e => setIncluirHistorico(e.target.checked)} className="w-4 h-4 accent-blue-600 rounded" />
-                    <label htmlFor="check-h" className="text-xs font-black uppercase text-slate-500 cursor-pointer">Incluir histórico</label>
+                    <label htmlFor="check-h" className="text-[11px] font-black uppercase text-slate-500 cursor-pointer">Incluir histórico</label>
                   </div>
                   
                   <button 
                     onClick={() => refrescarDatos()}
-                    className="text-xs font-black text-blue-600 uppercase flex items-center gap-1"
+                    className="text-[11px] font-black text-blue-600 uppercase flex items-center gap-1"
                     disabled={refrescando}
                   >
-                    <RefreshCw className={`w-3.5 h-3.5 ${refrescando ? 'animate-spin' : ''}`} />
-                    <span>{refrescando ? 'Actualizando' : 'Actualizar'}</span>
+                    <RefreshCw className={`w-3 h-3 ${refrescando ? 'animate-spin' : ''}`} />
+                    <span>{refrescando ? 'Actualizando...' : 'Actualizar'}</span>
                   </button>
                 </div>
+
+                {/* Indicador de Último Volcado en el Diario si procede */}
+                {ultimoVolcado && !incluirHistorico && (
+                  <div className="text-[10px] text-slate-400 font-semibold bg-white/70 px-2 py-1 rounded-lg border border-slate-150 flex items-center gap-1">
+                    <Archive className="w-3 h-3 text-slate-400" />
+                    <span>Datos activos desde el {formatearFechaES(ultimoVolcado.fechaCorte)}</span>
+                  </div>
+                )}
               </div>
 
               {/* Listado de Días */}
-              <div className="flex-1 overflow-y-auto space-y-3 pb-2 custom-scrollbar">
+              <div className="flex-1 overflow-y-auto space-y-2.5 pb-2 custom-scrollbar">
                 {dataStore.dias.length === 0 ? (
-                  <div className="text-center py-10 bg-slate-50 rounded-2xl border border-slate-200 text-sm font-bold text-slate-400">
+                  <div className="text-center py-8 bg-slate-50 rounded-2xl border border-slate-200 text-xs font-bold text-slate-400">
                     No se han encontrado registros en este rango de fechas.
                   </div>
                 ) : (
@@ -1201,26 +1249,26 @@ function App() {
                     const total = tramos.reduce((acc: number, t: any) => acc + t.durMin, 0);
                     
                     return (
-                      <div key={dia.iso} className="bg-white border border-slate-250 rounded-2xl p-3 shadow-sm space-y-3">
+                      <div key={dia.iso} className="bg-white border border-slate-200 rounded-2xl p-2.5 shadow-sm space-y-2">
                         {/* Cabecera del día */}
-                        <div className="flex justify-between items-center border-b border-slate-100 pb-1.5">
-                          <span className="text-xs font-black text-slate-400 uppercase">
+                        <div className="flex justify-between items-center border-b border-slate-100 pb-1">
+                          <span className="text-[11px] font-black text-slate-400 uppercase">
                             {new Date(dia.iso + 'T00:00:00').toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric', month: 'short' })}
                           </span>
-                          <span className="text-lg font-black text-blue-900">{Math.floor(total/60)}h {total%60}m</span>
+                          <span className="text-base font-black text-blue-900">{Math.floor(total/60)}h {total%60}m</span>
                         </div>
 
                         {/* Tramos Completados */}
-                        <div className="space-y-2">
+                        <div className="space-y-1.5">
                           {tramos.map((t: any, i: number) => (
-                            <div key={i} className="bg-slate-50 p-2.5 rounded-xl border border-slate-100 flex flex-col justify-between gap-1.5 relative group">
+                            <div key={i} className="bg-slate-50 p-2 rounded-xl border border-slate-100 flex flex-col justify-between gap-1 relative group">
                               <div className="flex justify-between items-start">
                                 <div>
-                                  <p className="text-xs font-black text-slate-900 uppercase leading-none mb-1">{t.user}</p>
+                                  <p className="text-xs font-black text-slate-900 uppercase leading-none mb-0.5">{t.user}</p>
                                   <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">{t.task}</p>
                                 </div>
                                 <div className="flex items-center gap-1.5">
-                                  <span className="text-xs font-black text-blue-700 bg-blue-50 px-2.5 py-1 rounded-md">{t.durStr}</span>
+                                  <span className="text-xs font-black text-blue-700 bg-blue-50 px-2 py-0.5 rounded-md">{t.durStr}</span>
                                   {/* Botón borrar tramo completo */}
                                   <button 
                                     onClick={() => handleBorrarTramoCompleto(t.fechaOriginal, t.inicio, t.fin, t.userId, t.taskId, t.user)}
@@ -1232,10 +1280,10 @@ function App() {
                                 </div>
                               </div>
                               
-                              <div className="flex justify-between items-center text-xs text-slate-600 border-t border-slate-200/40 pt-2">
-                                <div className="flex gap-4">
-                                  {/* Editar/Borrar individual Entrada */}
-                                  <span className="flex items-center gap-1 bg-white border rounded-lg px-2 py-1">
+                              <div className="flex justify-between items-center text-xs text-slate-600 border-t border-slate-200/40 pt-1.5">
+                                <div className="flex gap-2">
+                                  {/* Entrada */}
+                                  <span className="flex items-center gap-1 bg-white border border-slate-200 rounded-lg px-1.5 py-0.5 text-[11px]">
                                     <span className="font-black text-emerald-600">E:</span> {t.inicio}
                                     <button 
                                       onClick={() => setEditando({usuarioId: t.userId, fecha: t.fechaOriginal, horaOriginal: t.inicio, nuevaHora: t.inicio, nuevaAccion: 'Entrada', nuevaTareaId: t.taskId, accionOriginal: 'Entrada'})}
@@ -1253,8 +1301,8 @@ function App() {
                                     </button>
                                   </span>
 
-                                  {/* Editar/Borrar individual Salida */}
-                                  <span className="flex items-center gap-1 bg-white border rounded-lg px-2 py-1">
+                                  {/* Salida */}
+                                  <span className="flex items-center gap-1 bg-white border border-slate-200 rounded-lg px-1.5 py-0.5 text-[11px]">
                                     <span className="font-black text-rose-500">S:</span> {t.fin}
                                     <button 
                                       onClick={() => setEditando({usuarioId: t.userId, fecha: t.fechaOriginal, horaOriginal: t.fin, nuevaHora: t.fin, nuevaAccion: 'Salida', nuevaTareaId: t.taskId, accionOriginal: 'Salida'})}
@@ -1273,8 +1321,8 @@ function App() {
                                   </span>
                                 </div>
                                 
-                                {/* Info Geolocalización */}
-                                <div className="text-[10px] text-slate-400 font-bold flex items-center gap-1" title="Códigos Postales registrados (Entrada / Salida)">
+                                {/* Info CP */}
+                                <div className="text-[10px] text-slate-400 font-bold flex items-center gap-1" title="Ubicación registrada">
                                   <MapPin className="w-3 h-3 text-blue-500" />
                                   <span>{formatGPSObs(t.entradaGPS?.obs, t.salidaGPS?.obs)}</span>
                                 </div>
@@ -1283,43 +1331,40 @@ function App() {
                           ))}
                         </div>
 
-                        {/* Fichadas Huérfanas (Pendientes o Errores) */}
+                        {/* Fichadas Huérfanas */}
                         {huerfanos.length > 0 && (
-                          <div className="space-y-1.5 pt-2 border-t border-dashed border-slate-200">
-                            <p className="text-xs font-black text-rose-500 uppercase tracking-widest flex items-center gap-1">
-                              <AlertTriangle className="w-3.5 h-3.5 text-rose-500" />
+                          <div className="space-y-1 pt-1.5 border-t border-dashed border-slate-200">
+                            <p className="text-[10px] font-black text-rose-500 uppercase tracking-widest flex items-center gap-1">
+                              <AlertTriangle className="w-3 h-3 text-rose-500" />
                               <span>Incompletos o errores</span>
                             </p>
                             {huerfanos.map((h: any, i: number) => (
-                              <div key={i} className="flex justify-between items-center bg-rose-50/50 p-2 rounded-xl border border-rose-100">
+                              <div key={i} className="flex justify-between items-center bg-rose-50/60 p-1.5 rounded-xl border border-rose-100">
                                 <div className="text-xs flex items-center">
-                                  <span className={`font-black px-2 py-0.5 rounded-md text-[10px] mr-2 ${h.tipo === 'Entrada' ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
+                                  <span className={`font-black px-1.5 py-0.5 rounded text-[10px] mr-1.5 ${h.tipo === 'Entrada' ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
                                     {h.tipo.toUpperCase()}
                                   </span>
-                                  <span className="font-extrabold text-slate-800 mr-2">{h.hora}</span>
-                                  <span className="text-slate-500 font-black uppercase truncate max-w-[120px]">{h.user}</span>
+                                  <span className="font-extrabold text-slate-800 mr-1.5 text-xs">{h.hora}</span>
+                                  <span className="text-slate-500 font-black uppercase truncate max-w-[100px] text-[11px]">{h.user}</span>
                                 </div>
-                                <div className="flex gap-2 items-center">
-                                  {/* Botón inteligente para resolver y rellenar la ficha huérfana */}
+                                <div className="flex gap-1.5 items-center">
                                   <button 
                                     onClick={() => abrirResolucionHuerfano(h, h.tipo === 'Entrada' ? 'Salida' : 'Entrada')}
-                                    className="bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 px-2.5 py-1.5 rounded-lg text-[10px] font-black uppercase flex items-center gap-1 transition-colors shadow-sm"
+                                    className="bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 px-2 py-1 rounded-lg text-[10px] font-black uppercase flex items-center gap-0.5 transition-colors shadow-sm"
                                   >
-                                    <Plus className="w-3.5 h-3.5" /> Completar
+                                    <Plus className="w-3 h-3" /> Completar
                                   </button>
-                                  
-                                  {/* Botones normales de Edición y Borrado */}
                                   <button 
                                     onClick={() => setEditando({usuarioId: h.userId, fecha: h.fechaOriginal, horaOriginal: h.hora, nuevaHora: h.hora, nuevaAccion: h.tipo, nuevaTareaId: h.taskId, accionOriginal: h.tipo})}
                                     className="text-blue-500 hover:text-blue-700 p-0.5"
                                   >
-                                    <Edit className="w-3.5 h-3.5" />
+                                    <Edit className="w-3 h-3" />
                                   </button>
                                   <button 
                                     onClick={() => handleBorrarIndividual(h.fechaOriginal, h.hora, h.tipo, h.userId, h.taskId, h.user)}
                                     className="text-rose-400 hover:text-rose-600 p-0.5"
                                   >
-                                    <Trash2 className="w-3.5 h-3.5" />
+                                    <Trash2 className="w-3 h-3" />
                                   </button>
                                 </div>
                               </div>
@@ -1334,24 +1379,24 @@ function App() {
             </div>
           )}
 
-          {/* TAB ANÁLISIS */}
+          {/* TAB 3: ANÁLISIS */}
           {tabActiva === 'analisis' && (
             <div className="flex-1 flex flex-col overflow-hidden">
-              <div className="flex justify-between items-center mb-3">
-                <h1 className="text-lg font-black uppercase tracking-tight flex items-center gap-1 text-slate-800">
-                  <TrendingUp className="w-5 h-5 text-blue-600" />
+              <div className="flex justify-between items-center mb-2.5">
+                <h1 className="text-base font-black uppercase tracking-tight flex items-center gap-1 text-slate-800">
+                  <TrendingUp className="w-4 h-4 text-blue-600" />
                   <span>Análisis de Jornada</span>
                 </h1>
-                <button onClick={handlePrint} className="bg-slate-900 hover:bg-slate-800 text-white px-3.5 py-2.5 rounded-lg text-xs font-black uppercase flex items-center gap-1 transition-colors shadow-sm">
+                <button onClick={handlePrint} className="bg-slate-900 hover:bg-slate-800 text-white px-2.5 py-1.5 rounded-lg text-xs font-black uppercase flex items-center gap-1 transition-colors shadow-sm">
                   <Printer className="w-3.5 h-3.5" /> Reporte
                 </button>
               </div>
               
-              <div className="space-y-3 mb-4">
-                <div className="bg-blue-800 p-3 rounded-2xl text-white shadow-md flex items-center gap-2 border border-blue-900">
-                   <User className="w-5 h-5 text-blue-200" />
+              <div className="space-y-2 mb-3">
+                <div className="bg-blue-800 p-2.5 rounded-2xl text-white shadow-md flex items-center gap-2 border border-blue-900">
+                   <User className="w-4 h-4 text-blue-200" />
                    <select 
-                     className="flex-1 bg-transparent text-base font-black outline-none border-none cursor-pointer" 
+                     className="flex-1 bg-transparent text-sm font-black outline-none border-none cursor-pointer" 
                      value={usuarioAnalisisId} 
                      onChange={(e) => setUsuarioAnalisisId(e.target.value)}
                    >
@@ -1362,13 +1407,13 @@ function App() {
                 </div>
                 
                 <div className="grid grid-cols-2 gap-2">
-                  <input type="date" value={filtroDesde} onChange={(e) => setFiltroDesde(e.target.value)} className="p-2.5 bg-slate-100 border border-slate-200 rounded-xl text-sm font-bold outline-none" />
-                  <input type="date" value={filtroHasta} onChange={(e) => setFiltroHasta(e.target.value)} className="p-2.5 bg-slate-100 border border-slate-200 rounded-xl text-sm font-bold outline-none" />
+                  <input type="date" value={filtroDesde} onChange={(e) => setFiltroDesde(e.target.value)} className="p-2 bg-slate-100 border border-slate-200 rounded-xl text-xs font-bold outline-none" />
+                  <input type="date" value={filtroHasta} onChange={(e) => setFiltroHasta(e.target.value)} className="p-2 bg-slate-100 border border-slate-200 rounded-xl text-xs font-bold outline-none" />
                 </div>
               </div>
 
-              <div className="flex-1 overflow-y-auto space-y-4 pb-4 custom-scrollbar">
-                {/* Indicadores Clave (KPIs) en una sola fila compacta */}
+              <div className="flex-1 overflow-y-auto space-y-3 pb-3 custom-scrollbar">
+                {/* Indicadores Clave (KPIs) */}
                 <div className="bg-slate-50 border border-slate-200 p-3 rounded-[1.5rem] shadow-sm">
                   <div className="grid grid-cols-3 gap-1 text-center">
                     <div className="border-r border-slate-200 pr-1">
@@ -1392,18 +1437,18 @@ function App() {
                 </div>
 
                 {/* Desglose de horas por Centro de Trabajo */}
-                <div className="space-y-2">
-                  <p className="text-xs font-black text-slate-400 uppercase tracking-widest px-0.5">Horas por centro de trabajo</p>
+                <div className="space-y-1.5">
+                  <p className="text-[11px] font-black text-slate-400 uppercase tracking-widest px-0.5">Horas por centro de trabajo</p>
                   
                   {Object.keys(stats.tareas || {}).length === 0 ? (
-                    <div className="text-center py-6 bg-slate-50 rounded-xl border text-sm text-slate-400 font-bold">
+                    <div className="text-center py-6 bg-slate-50 rounded-xl border text-xs text-slate-400 font-bold">
                       No hay horas registradas en este periodo.
                     </div>
                   ) : (
                     Object.entries(stats.tareas || {}).map(([tarea, mins]: any) => (
-                      <div key={tarea} className="bg-white border border-slate-200 p-4 rounded-xl flex justify-between items-center text-sm shadow-sm">
+                      <div key={tarea} className="bg-white border border-slate-200 p-3 rounded-xl flex justify-between items-center text-xs shadow-sm">
                         <span className="font-extrabold text-slate-700 uppercase tracking-tight">{tarea}</span>
-                        <span className="font-black text-blue-700 text-xs bg-blue-50 px-3 py-1 rounded-lg border border-blue-100">{Math.floor(mins/60)}h {mins%60}m</span>
+                        <span className="font-black text-blue-700 text-xs bg-blue-50 px-2.5 py-1 rounded-lg border border-blue-100">{Math.floor(mins/60)}h {mins%60}m</span>
                       </div>
                     ))
                   )}
@@ -1412,22 +1457,72 @@ function App() {
             </div>
           )}
 
-          {/* TAB GESTIÓN */}
+          {/* TAB 4: AJUSTES Y MANTENIMIENTO DE DATOS */}
           {tabActiva === 'admin' && (
-            <div className="flex-1 space-y-5 overflow-y-auto pb-2 custom-scrollbar">
-              <h1 className="text-lg font-black uppercase tracking-tight text-slate-800 flex items-center gap-1">
-                <Settings className="w-5 h-5 text-blue-600" />
+            <div className="flex-1 space-y-4 overflow-y-auto pb-2 custom-scrollbar">
+              <h1 className="text-base font-black uppercase tracking-tight text-slate-800 flex items-center gap-1">
+                <Settings className="w-4 h-4 text-blue-600" />
                 <span>Gestión de Maestros</span>
               </h1>
               
-              {/* Mantenimiento de BD / Archivo */}
-              <div className="bg-slate-50 p-3.5 rounded-[1.5rem] border border-slate-200 space-y-2.5 shadow-sm">
-                <p className="text-xs font-black text-blue-700 uppercase tracking-widest">Mantenimiento de Datos</p>
+              {/* Mantenimiento de BD / Archivo con visualización del último volcado */}
+              <div className="bg-slate-50 p-3.5 rounded-[1.5rem] border border-slate-200 space-y-3 shadow-sm">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-black text-blue-700 uppercase tracking-widest flex items-center gap-1">
+                    <Archive className="w-3.5 h-3.5 text-blue-600" />
+                    <span>Mantenimiento de Datos</span>
+                  </p>
+                </div>
+
+                {/* Tarjeta Informativa del Último Volcado a Histórico */}
+                {ultimoVolcado ? (
+                  <div className="bg-blue-50/80 border border-blue-200 rounded-xl p-3 text-xs space-y-1">
+                    <div className="flex items-center justify-between text-blue-900 font-bold text-[11px]">
+                      <span>Último volcado realizado:</span>
+                      <span className="text-slate-500 font-medium">{ultimoVolcado.fechaEjecucion}</span>
+                    </div>
+                    <p className="text-slate-700 font-medium text-xs">
+                      Registros archivados anteriores a: <strong className="text-blue-800 font-black">{formatearFechaES(ultimoVolcado.fechaCorte)}</strong>
+                    </p>
+                  </div>
+                ) : (
+                  <div className="bg-slate-100/80 border border-slate-200 rounded-xl p-2.5 text-[11px] text-slate-500 font-medium flex items-center gap-1.5">
+                    <Archive className="w-3.5 h-3.5 text-slate-400" />
+                    <span>No hay registros de volcados previos guardados.</span>
+                  </div>
+                )}
+
                 <div className="space-y-2">
-                  <label className="text-xs font-black text-slate-500 uppercase block px-0.5">Mover a histórico registros anteriores a la fecha:</label>
-                  <input type="date" value={fechaCorteArchivo} onChange={e => setFechaCorteArchivo(e.target.value)} className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-sm font-bold outline-none shadow-sm" />
-                  <button onClick={handleArchivar} className="w-full bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 py-3 rounded-xl font-black text-xs uppercase tracking-wider flex items-center justify-center gap-1.5 transition-colors shadow-sm">
-                    📦 Archivar Datos Antiguos
+                  <div className="flex justify-between items-center">
+                    <label className="text-[11px] font-black text-slate-500 uppercase block px-0.5">
+                      Mover a histórico registros hasta la fecha:
+                    </label>
+                    {ultimoVolcado && (
+                      <button 
+                        type="button" 
+                        onClick={() => setFechaCorteArchivo(ultimoVolcado.fechaCorte)}
+                        className="text-[10px] font-bold text-blue-600 hover:text-blue-800 flex items-center gap-0.5"
+                        title="Usar la fecha del último volcado"
+                      >
+                        <RotateCcw className="w-2.5 h-2.5" />
+                        <span>Última fecha</span>
+                      </button>
+                    )}
+                  </div>
+
+                  <input 
+                    type="date" 
+                    value={fechaCorteArchivo} 
+                    onChange={e => setFechaCorteArchivo(e.target.value)} 
+                    className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold outline-none shadow-sm focus:border-blue-500" 
+                  />
+
+                  <button 
+                    onClick={handleArchivar} 
+                    className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-xl font-black text-xs uppercase tracking-wider flex items-center justify-center gap-1.5 transition-colors shadow-sm cursor-pointer"
+                  >
+                    <Archive className="w-3.5 h-3.5" />
+                    <span>Archivar Datos Antiguos</span>
                   </button>
                 </div>
               </div>
@@ -1436,20 +1531,20 @@ function App() {
               <div className="bg-slate-50 p-3.5 rounded-[1.5rem] border border-slate-200 space-y-2.5 shadow-sm">
                 <p className="text-xs font-black text-blue-700 uppercase tracking-widest">Colaboradores</p>
                 <div className="flex gap-1.5 bg-white p-1 rounded-xl border border-slate-200">
-                  <input type="text" value={nuevoOperario} onChange={(e) => setNuevoOperario(e.target.value)} placeholder="Nombre del nuevo colaborador..." className="flex-1 bg-transparent p-2 text-sm outline-none font-bold" />
-                  <button onClick={() => handleAddConfig('config_usuario', nuevoOperario)} className="bg-blue-600 hover:bg-blue-700 text-white w-9 h-9 flex items-center justify-center rounded-lg text-sm shadow transition-colors">➕</button>
+                  <input type="text" value={nuevoOperario} onChange={(e) => setNuevoOperario(e.target.value)} placeholder="Nombre del nuevo colaborador..." className="flex-1 bg-transparent p-2 text-xs outline-none font-bold" />
+                  <button onClick={() => handleAddConfig('config_usuario', nuevoOperario)} className="bg-blue-600 hover:bg-blue-700 text-white w-8 h-8 flex items-center justify-center rounded-lg text-xs shadow transition-colors">➕</button>
                 </div>
-                <div className="max-h-28 overflow-y-auto space-y-1.5 pr-1 custom-scrollbar">
+                <div className="max-h-28 overflow-y-auto space-y-1 pr-1 custom-scrollbar">
                   {usuarios.map((u: Usuario) => (
-                    <div key={u.id} className={`bg-white border p-2.5 rounded-lg flex justify-between items-center text-sm px-3 shadow-sm ${u.activo === false ? 'bg-slate-50/50 opacity-60' : ''}`}>
+                    <div key={u.id} className={`bg-white border p-2 rounded-lg flex justify-between items-center text-xs px-2.5 shadow-sm ${u.activo === false ? 'bg-slate-50/50 opacity-60' : ''}`}>
                       <span className={`font-bold text-slate-700 uppercase tracking-tight ${u.activo === false ? 'line-through text-slate-400' : ''}`}>{u.nombre} {u.activo === false && ' (INACTIVO)'}</span>
-                      <div className="flex gap-2 items-center">
+                      <div className="flex gap-1.5 items-center">
                         <button onClick={() => setEditandoConfig({ tipo: 'config_usuario', id: u.id, nombre: u.nombre })} className="text-slate-400 hover:text-blue-600 transition-colors">
                           <Edit className="w-3.5 h-3.5" />
                         </button>
                         <button 
                           onClick={() => handleToggleEstado('config_usuario', u.id)} 
-                          className={`text-[10px] font-black px-2.5 py-1.5 rounded transition-all shadow-sm ${
+                          className={`text-[10px] font-black px-2 py-1 rounded transition-all shadow-sm ${
                             u.activo !== false ? 'bg-rose-50 text-rose-600 border border-rose-200' : 'bg-emerald-50 text-emerald-600 border border-emerald-200'
                           }`}
                         >
@@ -1465,20 +1560,20 @@ function App() {
               <div className="bg-slate-50 p-3.5 rounded-[1.5rem] border border-slate-200 space-y-2.5 shadow-sm">
                 <p className="text-xs font-black text-emerald-700 uppercase tracking-widest">Centros de Trabajo</p>
                 <div className="flex gap-1.5 bg-white p-1 rounded-xl border border-slate-200">
-                  <input type="text" value={nuevoCentro} onChange={(e) => setNuevoCentro(e.target.value)} placeholder="Nombre del nuevo centro..." className="flex-1 bg-transparent p-2 text-sm outline-none font-bold" />
-                  <button onClick={() => handleAddConfig('config_tarea', nuevoCentro)} className="bg-emerald-600 hover:bg-emerald-700 text-white w-9 h-9 flex items-center justify-center rounded-lg text-sm shadow transition-colors">➕</button>
+                  <input type="text" value={nuevoCentro} onChange={(e) => setNuevoCentro(e.target.value)} placeholder="Nombre del nuevo centro..." className="flex-1 bg-transparent p-2 text-xs outline-none font-bold" />
+                  <button onClick={() => handleAddConfig('config_tarea', nuevoCentro)} className="bg-emerald-600 hover:bg-emerald-700 text-white w-8 h-8 flex items-center justify-center rounded-lg text-xs shadow transition-colors">➕</button>
                 </div>
-                <div className="max-h-28 overflow-y-auto space-y-1.5 pr-1 custom-scrollbar">
+                <div className="max-h-28 overflow-y-auto space-y-1 pr-1 custom-scrollbar">
                   {tareas.map((t: Tarea) => (
-                    <div key={t.id} className={`bg-white border p-2.5 rounded-lg flex justify-between items-center text-sm px-3 shadow-sm ${t.activo === false ? 'bg-slate-50/50 opacity-60' : ''}`}>
+                    <div key={t.id} className={`bg-white border p-2 rounded-lg flex justify-between items-center text-xs px-2.5 shadow-sm ${t.activo === false ? 'bg-slate-50/50 opacity-60' : ''}`}>
                       <span className={`font-bold text-slate-700 uppercase tracking-tight ${t.activo === false ? 'line-through text-slate-400' : ''}`}>{t.nombre} {t.activo === false && ' (INACTIVO)'}</span>
-                      <div className="flex gap-2 items-center">
+                      <div className="flex gap-1.5 items-center">
                         <button onClick={() => setEditandoConfig({ tipo: 'config_tarea', id: t.id, nombre: t.nombre })} className="text-slate-400 hover:text-emerald-600 transition-colors">
                           <Edit className="w-3.5 h-3.5" />
                         </button>
                         <button 
                           onClick={() => handleToggleEstado('config_tarea', t.id)} 
-                          className={`text-[10px] font-black px-2.5 py-1.5 rounded transition-all shadow-sm ${
+                          className={`text-[10px] font-black px-2 py-1 rounded transition-all shadow-sm ${
                             t.activo !== false ? 'bg-rose-50 text-rose-600 border border-rose-200' : 'bg-emerald-50 text-emerald-600 border border-emerald-200'
                           }`}
                         >
