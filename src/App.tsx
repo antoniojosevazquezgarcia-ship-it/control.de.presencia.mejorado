@@ -102,8 +102,10 @@ function App() {
   const [fechaCorteArchivo, setFechaCorteArchivo] = useState('');
   
   // Modales
+  const [modalSalirOpen, setModalSalirOpen] = useState(false);
   const [editando, setEditando] = useState<any>(null);
   const [editandoConfig, setEditandoConfig] = useState<{ tipo: string; id: string; nombre: string } | null>(null);
+
   
   // Modal de Fichaje Manual y Resolución de Huérfanos
   const [modalManualOpen, setModalManualOpen] = useState(false);
@@ -644,6 +646,7 @@ function App() {
 
       setMensaje({ texto: `¡Archivado completado! Registros hasta ${formatearFechaES(fechaCorteArchivo)} movidos a histórico.`, tipo: 'exito' });
       setFechaCorteArchivo('');
+      setTimeout(() => setMensaje(null), 3500);
       refrescarDatos();
     } catch (e) { 
       setMensaje(null); 
@@ -848,6 +851,56 @@ function App() {
         </div>
       )}
 
+      {/* MODAL SALIR / CERRAR SESIÓN */}
+      {modalSalirOpen && (
+        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-50 flex items-center justify-center p-4 print:hidden animate-in fade-in duration-150">
+          <div className="bg-white w-full max-w-sm rounded-[2rem] p-6 shadow-2xl space-y-5 border border-slate-100 text-center">
+            <div className="w-14 h-14 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center mx-auto border-2 border-blue-100">
+              <CheckCircle2 className="w-7 h-7" />
+            </div>
+            
+            <div className="space-y-1.5">
+              <h2 className="text-lg font-black uppercase tracking-tight text-slate-900">Jornada y Fichajes Guardados</h2>
+              <p className="text-xs text-slate-500 font-semibold leading-relaxed">
+                Tus registros están sincronizados de forma segura en la nube.
+              </p>
+            </div>
+
+            <div className="space-y-2 pt-1">
+              <button 
+                onClick={() => {
+                  try {
+                    window.close();
+                  } catch {}
+                  setModalSalirOpen(false);
+                }} 
+                className="w-full py-3.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold text-xs uppercase shadow-md transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <LogOut className="w-4 h-4" />
+                <span>Cerrar pestaña / Salir</span>
+              </button>
+
+              <button 
+                onClick={() => {
+                  handleCambiarColaborador();
+                  setModalSalirOpen(false);
+                }} 
+                className="w-full py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold text-xs uppercase transition-all cursor-pointer"
+              >
+                Cambiar de colaborador
+              </button>
+
+              <button 
+                onClick={() => setModalSalirOpen(false)} 
+                className="w-full py-2 text-[11px] font-bold text-slate-400 hover:text-slate-600 uppercase tracking-wider cursor-pointer"
+              >
+                Permanecer en la aplicación
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* MODAL EDICIÓN FICHAJE */}
       {editando && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 print:hidden">
@@ -1019,21 +1072,25 @@ function App() {
             )}
           </div>
 
-          {/* Botón de colaborador rápido */}
-          {usuarioId ? (
+          <div className="flex items-center gap-1.5">
+            {usuarioId && (
+              <button 
+                onClick={handleCambiarColaborador} 
+                className="text-[11px] font-bold text-slate-500 hover:text-slate-800 transition-colors bg-slate-100 hover:bg-slate-200 px-2.5 py-1.5 rounded-xl cursor-pointer"
+                title="Cambiar de colaborador"
+              >
+                Cambiar
+              </button>
+            )}
             <button 
-              onClick={handleCambiarColaborador} 
-              className="text-xs font-bold text-slate-500 hover:text-rose-600 transition-colors flex items-center gap-1 bg-slate-100 hover:bg-rose-50 px-2.5 py-1.5 rounded-xl"
-              title="Cambiar de colaborador"
+              onClick={() => setModalSalirOpen(true)} 
+              className="text-[11px] font-black text-rose-600 hover:text-white bg-rose-50 hover:bg-rose-600 border border-rose-200 hover:border-rose-600 transition-all flex items-center gap-1 px-3 py-1.5 rounded-xl shadow-sm cursor-pointer"
+              title="Salir de la aplicación"
             >
               <LogOut className="w-3.5 h-3.5" />
-              <span>Cambiar usuario</span>
+              <span>SALIR</span>
             </button>
-          ) : (
-            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-              Listo para fichar
-            </div>
-          )}
+          </div>
         </div>
         
         {/* Barra superior de pestañas táctiles */}
