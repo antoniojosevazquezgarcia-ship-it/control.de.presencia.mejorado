@@ -3,7 +3,8 @@ export interface Tarea { id: string; nombre: string; esDefault: boolean; activo:
 export interface ConfiguracionResponse { usuarios: Usuario[]; tareas: Tarea[]; }
 
 // URL OPERATIVA DIARIA REAL DE GOOGLE APPS SCRIPT
-const URL_WEB_APP = "https://script.google.com/macros/s/AKfycbywgIfrYakC5iNS9tIK808NfGcZacJdOaNtmrsDMhlHPiP7WtrBOhlo9L3WLRn5fkNI/exec";
+const URL_WEB_APP = "https://script.google.com/macros/s/AKfycbzvdboP8zEikvDvihTkWPmSKkiwX_OBs8uW-tTEokpp1Q0ppXuYe_Kfaet44-JKK0-O/exec";
+
 
 
 export const obtenerConfiguracion = async (): Promise<ConfiguracionResponse> => {
